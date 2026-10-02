@@ -127,7 +127,35 @@ if IS_WINDOWS:
     _sig(gdi32.GetDIBits, (wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT,
                            wintypes.LPVOID, ctypes.POINTER(BITMAPINFO), wintypes.UINT), ctypes.c_int)
 
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    _sig(user32.ScreenToClient, (wintypes.HWND, ctypes.POINTER(wintypes.POINT)))
+    _sig(user32.ChildWindowFromPointEx, (wintypes.HWND, wintypes.POINT, wintypes.UINT), wintypes.HWND)
+    _sig(user32.SendMessageTimeoutW, (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+                                      wintypes.UINT, wintypes.UINT, ctypes.POINTER(ULONG_PTR)), wintypes.LPARAM)
+    _sig(user32.PostMessageW, (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM))
+    _sig(user32.SetFocus, (wintypes.HWND,), wintypes.HWND)
+    _sig(user32.GetFocus, (), wintypes.HWND)
+    _sig(user32.IsWindowEnabled, (wintypes.HWND,))
+    _sig(kernel32.OpenProcess, (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD), wintypes.HANDLE)
+    _sig(kernel32.CloseHandle, (wintypes.HANDLE,))
+    _sig(kernel32.GetCurrentProcess, (), wintypes.HANDLE)
+    _sig(kernel32.QueryFullProcessImageNameW, (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                               ctypes.POINTER(wintypes.DWORD)))
+    _sig(advapi32.OpenProcessToken, (wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)))
+    _sig(advapi32.GetTokenInformation, (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+                                        ctypes.POINTER(wintypes.DWORD)))
+    _sig(shell32.ShellExecuteW, (wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                 wintypes.LPCWSTR, ctypes.c_int), wintypes.HINSTANCE)
+
     INPUT_MOUSE, INPUT_KEYBOARD = 0, 1
+    CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT = 0x1, 0x4
+    WM_SETTEXT, WM_GETTEXT, WM_GETTEXTLENGTH = 0x000C, 0x000D, 0x000E
+    WM_KEYDOWN, WM_KEYUP, WM_CHAR = 0x0100, 0x0101, 0x0102
+    SMTO_ABORTIFHUNG = 0x2
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    TOKEN_QUERY = 0x0008
+    TokenElevation = 20
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE = 0x1, 0x2, 0x4
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP = 0x2, 0x4
     GA_ROOT, GW_OWNER = 2, 4
@@ -278,8 +306,12 @@ def activate(hwnd):
     time.sleep(0.1)
     if is_foreground(hwnd):
         return True
-    # 대체 방법: Alt 키 입력으로 포그라운드 잠금 해제
-    _send([_key_input(KEY_CODES["ALT"], False), _key_input(KEY_CODES["ALT"], True)])
+    # 대체 방법: 움직임 0 마우스 입력으로 포그라운드 잠금 해제
+    # (Alt 키를 쓰면 AMIS 메뉴바가 활성화돼 이후 키 입력이 칸에 안 들어갈 수 있음)
+    nudge = INPUT()
+    nudge.type = INPUT_MOUSE
+    _send([nudge])
+    user32.BringWindowToTop(hwnd)
     user32.SetForegroundWindow(hwnd)
     time.sleep(0.1)
     return is_foreground(hwnd)
@@ -483,3 +515,153 @@ def capture_window(hwnd):
         gdi32.DeleteObject(hbmp)
         gdi32.DeleteDC(hdc_mem)
         user32.ReleaseDC(hwnd, hdc_win)
+
+
+# ---------------------------------------------------------------- 컨트롤 / 메시지
+def class_name(hwnd):
+    return _class_name(hwnd) if IS_WINDOWS and hwnd else ""
+
+
+def control_at(root_hwnd, sx, sy):
+    """화면 좌표 (sx, sy) 에 있는 root 창의 가장 안쪽 자식 컨트롤 (다른 창에 가려져 있어도 동작)."""
+    if not IS_WINDOWS or not root_hwnd:
+        return None
+    h = root_hwnd
+    for _ in range(30):
+        pt = wintypes.POINT(int(sx), int(sy))
+        user32.ScreenToClient(h, ctypes.byref(pt))
+        child = user32.ChildWindowFromPointEx(h, pt, CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT)
+        if not child or child == h:
+            break
+        h = child
+    return h
+
+
+def is_edit_like(hwnd):
+    return "edit" in class_name(hwnd).lower()
+
+
+def _send_msg(hwnd, msg, wparam, lparam, timeout=2000):
+    res = ULONG_PTR()
+    ok = user32.SendMessageTimeoutW(hwnd, msg, wparam, lparam, SMTO_ABORTIFHUNG, timeout, ctypes.byref(res))
+    return res.value if ok else None
+
+
+def get_control_text(hwnd):
+    """WM_GETTEXT 로 컨트롤 내용 읽기 (실패 시 None)."""
+    if not IS_WINDOWS or not hwnd:
+        return None
+    n = _send_msg(hwnd, WM_GETTEXTLENGTH, 0, 0)
+    if n is None:
+        return None
+    buf = ctypes.create_unicode_buffer(int(n) + 2)
+    if _send_msg(hwnd, WM_GETTEXT, int(n) + 2, ctypes.addressof(buf)) is None:
+        return None
+    return buf.value
+
+
+def set_control_text(hwnd, text):
+    if not IS_WINDOWS or not hwnd:
+        return False
+    buf = ctypes.create_unicode_buffer(text)
+    return bool(_send_msg(hwnd, WM_SETTEXT, 0, ctypes.addressof(buf)))
+
+
+def focus_control(hwnd):
+    """다른 프로세스의 컨트롤에 키보드 포커스를 준다 (창을 앞으로 가져오지 않음)."""
+    if not IS_WINDOWS or not hwnd:
+        return False
+    cur_tid = kernel32.GetCurrentThreadId()
+    tgt_tid = user32.GetWindowThreadProcessId(hwnd, None)
+    if not user32.AttachThreadInput(cur_tid, tgt_tid, True):
+        return False
+    try:
+        user32.SetFocus(hwnd)
+        return user32.GetFocus() == hwnd
+    finally:
+        user32.AttachThreadInput(cur_tid, tgt_tid, False)
+
+
+def post_key(hwnd, key, char=None):
+    """키보드 장치를 거치지 않고 WM_KEYDOWN/WM_CHAR/WM_KEYUP 메시지를 직접 보낸다."""
+    if not IS_WINDOWS or not hwnd:
+        return False
+    vk = KEY_CODES[key.upper()]
+    scan = user32.MapVirtualKeyW(vk, 0)
+    ext = (1 << 24) if vk in EXTENDED_KEYS else 0
+    down = 1 | (scan << 16) | ext
+    up = down | (1 << 30) | (1 << 31)
+    ok = user32.PostMessageW(hwnd, WM_KEYDOWN, vk, down)
+    if char is not None:
+        user32.PostMessageW(hwnd, WM_CHAR, ord(char), down)
+    user32.PostMessageW(hwnd, WM_KEYUP, vk, up)
+    return bool(ok)
+
+
+# ---------------------------------------------------------------- 권한 / 프로세스
+def process_path(pid):
+    if not IS_WINDOWS or not pid:
+        return ""
+    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(1024)
+        if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return buf.value
+        return ""
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def _token_elevated(proc_handle):
+    tok = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(proc_handle, TOKEN_QUERY, ctypes.byref(tok)):
+        return None
+    try:
+        val = wintypes.DWORD()
+        size = wintypes.DWORD()
+        if not advapi32.GetTokenInformation(tok, TokenElevation, ctypes.byref(val),
+                                            ctypes.sizeof(val), ctypes.byref(size)):
+            return None
+        return bool(val.value)
+    finally:
+        kernel32.CloseHandle(tok)
+
+
+def is_self_elevated():
+    if not IS_WINDOWS:
+        return False
+    return bool(_token_elevated(kernel32.GetCurrentProcess()))
+
+
+def is_process_elevated(pid):
+    """True/False, 확인 불가(보통 상대가 관리자 권한일 때)면 None."""
+    if not IS_WINDOWS or not pid:
+        return None
+    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return None
+    try:
+        return _token_elevated(h)
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def restart_as_admin():
+    """현재 프로그램을 관리자 권한으로 다시 실행 (UAC 창 표시). 성공 시 True."""
+    if not IS_WINDOWS:
+        return False
+    import os
+    if getattr(sys, "frozen", False):
+        exe, params = sys.executable, ""
+    else:
+        exe = sys.executable
+        if exe.lower().endswith("python.exe"):
+            alt = exe[:-10] + "pythonw.exe"
+            if os.path.exists(alt):
+                exe = alt
+        params = '"%s"' % os.path.abspath(sys.argv[0])
+    r = shell32.ShellExecuteW(None, "runas", exe, params, os.getcwd(), 1)
+    return (r or 0) > 32

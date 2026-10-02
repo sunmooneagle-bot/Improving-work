@@ -169,6 +169,8 @@ class Worker(threading.Thread):
 
         pid = w.get_window_pid(hwnd)
         baseline = set(w.list_popups(pid, exclude=hwnd))
+        if cfg.get("input_method") == "message":
+            return self.process_by_message(item, hwnd, pid, baseline, offset)
         prev_fg = w.get_foreground()
         prev_pos = w.get_cursor_pos()
         try:
@@ -181,12 +183,15 @@ class Worker(threading.Thread):
 
             self.phase("검사번호 입력")
             left, top, _, _ = w.get_window_rect(hwnd)
-            w.click(left + offset[0], top + offset[1])
+            fx, fy = left + offset[0], top + offset[1]
+            w.click(fx, fy)
             self.mark()
             self.sleep(0.2)
             self.clear_field()
             self.input_text(item.code)
             self.mark()
+            self.sleep(0.1)
+            self.verify_input(w.control_at(hwnd, fx, fy), item.code)
             self.check_user()
 
             if cfg.get("press_enter", True):
@@ -218,6 +223,47 @@ class Worker(threading.Thread):
                 w.activate(prev_fg)
                 w.set_cursor_pos(*prev_pos)
                 self.mark()
+
+    def process_by_message(self, item, hwnd, pid, baseline, offset):
+        """창을 앞으로 가져오지 않고 메시지를 직접 보내는 방식 (키보드 보안 프로그램 영향 없음)."""
+        cfg = self.cfg
+        left, top, _, _ = w.get_window_rect(hwnd)
+        ctrl = w.control_at(hwnd, left + offset[0], top + offset[1])
+        if not ctrl or ctrl == hwnd:
+            raise StepError("검사번호 칸 컨트롤을 찾지 못했습니다 (위치 재지정 필요)")
+
+        self.phase("검사번호 입력 (메시지)")
+        w.focus_control(ctrl)
+        if not w.set_control_text(ctrl, item.code):
+            raise StepError("검사번호 칸에 값을 넣지 못했습니다 [%s]" % w.class_name(ctrl))
+        self.sleep(0.1)
+        self.verify_input(ctrl, item.code)
+
+        if cfg.get("press_enter", True):
+            w.post_key(ctrl, "ENTER", "\r")
+        self.phase("조회 대기")
+        self.sleep(cfg.get("load_wait", 2.0))
+        err = self.handle_dialogs(pid, hwnd, baseline)
+        if err:
+            raise StepError("조회 오류: " + err)
+
+        self.phase("저장 (%s, 메시지)" % cfg.get("save_key", "F9"))
+        w.post_key(ctrl, cfg.get("save_key", "F9"))
+        self.sleep(cfg.get("save_wait", 2.0))
+        err = self.handle_dialogs(pid, hwnd, baseline)
+        if err:
+            raise StepError("저장 오류: " + err)
+
+    def verify_input(self, ctrl, code):
+        """일반 입력칸(Edit)이면 실제로 번호가 들어갔는지 읽어서 확인한다."""
+        if not ctrl or not w.is_edit_like(ctrl):
+            return
+        text = w.get_control_text(ctrl)
+        if text is None:
+            return
+        norm = lambda t: "".join(t.split()).upper()
+        if norm(code) not in norm(text):
+            raise StepError("검사번호가 입력되지 않았습니다 (칸 내용: '%s') → [진단] 결과 확인" % text[:30])
 
     def clear_field(self):
         method = self.cfg.get("clear_method", "home_end")

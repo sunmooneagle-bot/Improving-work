@@ -50,7 +50,9 @@ STATUS_STYLE = {
     FAIL: ("✕ 저장실패", "#fde1e1", "#c62828"),
 }
 
-INPUT_METHODS = [("paste", "붙여넣기 (권장)"), ("unicode", "문자 직접입력"), ("keys", "키보드 키입력")]
+INPUT_METHODS = [("paste", "붙여넣기 (권장)"), ("unicode", "문자 직접입력"), ("keys", "키보드 키입력"),
+                 ("message", "메시지 직접전송 (백그라운드)")]
+TEST_TEXT = "26-T -000000"
 CLEAR_METHODS = [("home_end", "Home → Shift+End 삭제"), ("ctrl_a", "Ctrl+A 삭제"),
                  ("backspace", "Backspace 반복")]
 
@@ -151,6 +153,7 @@ class App:
         root.after(100, self.poll_events)
         root.after(300, self.poll_preview)
         root.after(1000, self.poll_amis)
+        root.after(1500, self.check_privilege)
         self.qr_entry.focus_set()
 
     # ================================================================ 스타일
@@ -301,6 +304,8 @@ class App:
         m.add_command(label="  전체 삭제", command=lambda: self.clear_items(None))
         m.add_separator()
         m.add_command(label="  검사번호 칸 위치 지정", command=self.calibrate)
+        m.add_command(label="  진단 / 입력 테스트", command=self.diagnose)
+        m.add_command(label="  관리자 권한으로 다시 실행", command=self.restart_admin)
         m.add_command(label="  축소창", command=self.open_mini)
         mb.config(menu=m)
         return mb
@@ -381,6 +386,7 @@ class App:
         self.offset_lbl.pack(side="left")
         _btn(posf, "위치 지정", self.calibrate, bg=C["teal"], fg="white").pack(side="left", padx=4)
         _btn(posf, "위치 확인", self.test_position).pack(side="left")
+        _btn(posf, "진단 / 입력 테스트", self.diagnose, bg=C["pink"], fg=C["red"]).pack(side="left", padx=4)
         row(inner, 1, "검사번호 칸", posf)
         tk.Label(inner, text="※ AMIS 화면의 노란색 검사번호 칸 위치를 한 번 지정해 두면 됩니다.",
                  bg=C["panel"], fg=C["red"], font=F).grid(row=2, column=0, columnspan=3, sticky="w")
@@ -594,6 +600,8 @@ class App:
                     self.on_state(d["state"])
                 elif kind == "amis":
                     self.set_amis(d["found"])
+                elif kind == "call":
+                    d["fn"](*d.get("args", ()))
         except queue.Empty:
             pass
         self.root.after(100, self.poll_events)
@@ -730,7 +738,173 @@ class App:
         self.offset_lbl.config(text=self._offset_text())
         self.set_phase("위치 저장됨")
         self.status("검사번호 칸 위치가 저장되었습니다. 오른쪽 작업화면의 빨간 원을 확인하세요.")
-        self.log("검사번호 칸 위치 지정: %s" % self._offset_text())
+        ctrl = w.control_at(hwnd, x, y)
+        self.log("검사번호 칸 위치 지정: %s · 컨트롤 [%s] 내용 '%s'" % (
+            self._offset_text(), w.class_name(ctrl), (w.get_control_text(ctrl) or "")[:30]))
+
+    # ================================================================ 권한 / 진단
+    def check_privilege(self):
+        """AMIS 가 관리자 권한이고 이 프로그램은 아니면, Windows 가 입력을 막는다 (UIPI)."""
+        if not w.IS_WINDOWS or w.is_self_elevated():
+            return
+        hwnd = w.find_window(self.cfg.get("window_keyword", "AMIS"))
+        if not hwnd:
+            return
+        if w.is_process_elevated(w.get_window_pid(hwnd)) is not False:
+            self.log("AMIS 가 관리자 권한으로 실행 중인 것으로 보입니다. 이 프로그램도 관리자 권한이 필요합니다.",
+                     "warn")
+            if messagebox.askyesno(
+                    "관리자 권한 필요",
+                    "AMIS 가 관리자 권한으로 실행 중입니다.\n\n"
+                    "이 경우 Windows 보안 정책 때문에 이 프로그램의 키 입력이 AMIS 에 전달되지 않습니다.\n"
+                    "관리자 권한으로 다시 실행할까요?", parent=self.root):
+                self.restart_admin()
+
+    def restart_admin(self):
+        if w.is_self_elevated():
+            messagebox.showinfo("안내", "이미 관리자 권한으로 실행 중입니다.", parent=self.root)
+            return
+        if self.worker_alive():
+            self.worker.stop()
+        if w.restart_as_admin():
+            self.on_close(force=True)
+        else:
+            messagebox.showerror("오류", "관리자 권한으로 실행하지 못했습니다.\n"
+                                 "실행 파일을 마우스 오른쪽 버튼 → '관리자 권한으로 실행' 해 주세요.",
+                                 parent=self.root)
+
+    def diagnose(self):
+        if self.worker_alive():
+            messagebox.showinfo("안내", "작업을 정지한 뒤 진단해 주세요.", parent=self.root)
+            return
+        self.apply_settings(silent=True)
+        do_test = messagebox.askyesno(
+            "진단 / 입력 테스트",
+            "AMIS 연결 상태와 검사번호 칸 정보를 확인합니다.\n\n"
+            "입력 테스트도 할까요?\n(AMIS 검사번호 칸에 '%s' 를 방식별로 넣어 보고 바로 지웁니다.\n"
+            " 테스트 중에는 키보드/마우스를 만지지 마세요.)" % TEST_TEXT, parent=self.root)
+        self.status("진단 중… 키보드/마우스를 만지지 마세요.")
+        threading.Thread(target=self._diagnose_thread, args=(do_test,), daemon=True).start()
+
+    def _diagnose_thread(self, do_test):
+        lines = []
+        add = lines.append
+        yn = lambda v: "확인불가(관리자 권한일 가능성 높음)" if v is None else ("예" if v else "아니오")
+        add("[진단 시각] %s" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        self_admin = w.is_self_elevated()
+        add("이 프로그램 관리자 권한: %s" % yn(self_admin))
+        hwnd = w.find_window(self.cfg.get("window_keyword", "AMIS"))
+        if not hwnd:
+            add("AMIS 창: 찾지 못함 (창 제목 포함 글자 '%s' 확인)" % self.cfg.get("window_keyword"))
+            self.emit("call", fn=self._show_report, args=(lines,))
+            return
+        pid = w.get_window_pid(hwnd)
+        amis_admin = w.is_process_elevated(pid)
+        add("AMIS 창 제목: %s" % w.window_title(hwnd))
+        add("AMIS 창 클래스: %s" % w.class_name(hwnd))
+        add("AMIS 실행파일: %s (PID %d)" % (w.process_path(pid) or "확인불가", pid))
+        add("AMIS 관리자 권한: %s" % yn(amis_admin))
+        off = self.cfg.get("field_offset")
+        ctrl = None
+        if off:
+            l, t, _, _ = w.get_window_rect(hwnd)
+            fx, fy = l + off[0], t + off[1]
+            ctrl = w.control_at(hwnd, fx, fy)
+            add("검사번호 칸 위치: %s (화면 %d, %d)" % (self._offset_text(), fx, fy))
+            add("검사번호 칸 컨트롤: [%s] %s · 현재 내용 '%s'" % (
+                w.class_name(ctrl), "(입력칸 Edit)" if w.is_edit_like(ctrl) else "(일반 입력칸 아님)",
+                (w.get_control_text(ctrl) or "")[:40]))
+            if ctrl == hwnd:
+                add("  → 칸이 별도 컨트롤로 잡히지 않습니다 (웹/자바/자체 그리기 화면일 수 있음)")
+        else:
+            add("검사번호 칸 위치: 미지정")
+
+        results = {}
+        if do_test and off and ctrl and ctrl != hwnd:
+            readable = w.get_control_text(ctrl) is not None and w.is_edit_like(ctrl)
+            for key, label in INPUT_METHODS:
+                ok = self._test_method(hwnd, ctrl, fx, fy, key) if readable else None
+                results[key] = ok
+                add("입력 테스트 - %s: %s" % (label, {True: "성공", False: "실패", None: "확인불가(내용 읽기 불가)"}[ok]))
+            self._clear_test(hwnd, ctrl, fx, fy)
+
+        add("")
+        add("[판단]")
+        if not self_admin and amis_admin is not False:
+            add("● AMIS 가 관리자 권한입니다 → 이 프로그램도 [Action ▸ 관리자 권한으로 다시 실행] 하세요.")
+        ok_methods = [k for k, v in results.items() if v]
+        if results and ok_methods:
+            best = ok_methods[0]
+            add("● 입력 성공 방식: %s → 설정에 자동 적용했습니다." % dict(INPUT_METHODS)[best])
+            self.emit("call", fn=self._apply_method, args=(best,))
+        elif results and not any(results.values()):
+            add("● 모든 방식 실패: 키보드 보안 프로그램 또는 권한 문제 가능성이 큽니다. 이 진단 내용을 전달해 주세요.")
+        elif not results and ctrl and ctrl != hwnd and not w.is_edit_like(ctrl):
+            add("● 일반 입력칸이 아니라 결과를 자동 확인할 수 없습니다. 이 진단 내용을 전달해 주세요.")
+        self.emit("call", fn=self._show_report, args=(lines,))
+
+    def _test_method(self, hwnd, ctrl, fx, fy, method):
+        cfg = dict(self.cfg, input_method=method)
+        worker = Worker(self.store, cfg, lambda *a, **k: None)
+        try:
+            if method == "message":
+                w.focus_control(ctrl)
+                w.set_control_text(ctrl, "")
+                w.set_control_text(ctrl, TEST_TEXT)
+            else:
+                w.activate(hwnd)
+                time.sleep(0.3)
+                w.click(fx, fy)
+                time.sleep(0.2)
+                worker.clear_field()
+                worker.input_text(TEST_TEXT)
+            time.sleep(0.3)
+            text = w.get_control_text(ctrl) or ""
+            return "".join(TEST_TEXT.split()) in "".join(text.split()).upper()
+        except Exception:
+            return False
+
+    def _clear_test(self, hwnd, ctrl, fx, fy):
+        w.set_control_text(ctrl, "")
+        text = w.get_control_text(ctrl) or ""
+        if text.strip():
+            w.activate(hwnd)
+            w.click(fx, fy)
+            Worker(self.store, self.cfg, lambda *a, **k: None).clear_field()
+
+    def _apply_method(self, method):
+        self.input_cb.set(dict(INPUT_METHODS)[method])
+        self.apply_settings(silent=True)
+
+    def _show_report(self, lines):
+        text = "\n".join(lines)
+        for line in lines:
+            if line:
+                self.log("진단 " + line)
+        self.status("진단 완료")
+        self.root.deiconify()
+        self.root.lift()
+        win = tk.Toplevel(self.root)
+        win.title("진단 결과")
+        win.configure(bg=C["panel"])
+        win.transient(self.root)
+        hdr = tk.Frame(win, bg=C["teal"])
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="☑ 진단 결과 (아래 내용을 복사해서 전달해 주세요)", bg=C["teal"], fg="white",
+                 font=F_B).pack(side="left", padx=6, pady=3)
+        t = tk.Text(win, font=(FONT_NAME, 9), width=90, height=20, wrap="word", relief="flat")
+        t.insert("1.0", text)
+        t.pack(fill="both", expand=True, padx=6, pady=6)
+        bf = tk.Frame(win, bg=C["panel"])
+        bf.pack(fill="x", padx=6, pady=(0, 6))
+
+        def copy():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.status("진단 결과를 복사했습니다.")
+
+        _btn(bf, "복사", copy, bg=C["save"], bold=True).pack(side="left")
+        _btn(bf, "닫기", win.destroy).pack(side="right")
 
     def test_position(self):
         off = self.cfg.get("field_offset")
@@ -807,8 +981,8 @@ class App:
         self.root.deiconify()
         self.root.lift()
 
-    def on_close(self):
-        if self.worker_alive():
+    def on_close(self, force=False):
+        if self.worker_alive() and not force:
             if not messagebox.askyesno("종료", "작업이 진행중입니다. 정지하고 종료할까요?", parent=self.root):
                 return
             self.worker.stop()
