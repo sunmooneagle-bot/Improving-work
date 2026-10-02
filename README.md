@@ -18,6 +18,12 @@ AMIS **병리결과입력** 화면에서 검사번호를 하나씩 조회하고 
 
 ## 설치 / 실행 (Windows)
 
+**가장 간단한 방법 — 파일 하나:** `amis_qr_saver.py` 만 복사한 뒤
+`pip install pillow uiautomation` → `python amis_qr_saver.py` (콘솔 없이: `pythonw amis_qr_saver.py`).
+(이 파일은 `python tools/make_single.py` 로 qrsaver 폴더에서 자동 생성됩니다)
+
+**폴더 전체로 실행:**
+
 1. [Python 3.8 이상](https://www.python.org/downloads/) 설치 (설치 시 *Add Python to PATH* 체크)
 2. 이 폴더에서 `pip install -r requirements.txt` (미리보기용 Pillow)
 3. `run.pyw` 더블클릭
