@@ -8,6 +8,7 @@
 import threading
 import time
 
+from . import uia
 from . import win32 as w
 from .models import WAIT, RUN, DONE, FAIL
 
@@ -99,6 +100,10 @@ class Worker(threading.Thread):
 
     # ------------------------------------------------------------ 메인 루프
     def run(self):
+        with uia.thread_init():
+            self._run()
+
+    def _run(self):
         self.emit("state", state="running")
         self.log("자동 저장을 시작합니다.")
         finished = False
@@ -163,6 +168,8 @@ class Worker(threading.Thread):
     # ------------------------------------------------------------ 한 건 처리
     def process(self, item, hwnd):
         cfg = self.cfg
+        if cfg.get("input_method") == "uia":
+            return self.process_by_uia(item, hwnd)
         offset = cfg.get("field_offset")
         if not offset:
             raise StepError("검사번호 칸 위치가 설정되지 않았습니다 (설정 탭)")
@@ -223,6 +230,101 @@ class Worker(threading.Thread):
                 w.activate(prev_fg)
                 w.set_cursor_pos(*prev_pos)
                 self.mark()
+
+    # ------------------------------------------------------------ UI Automation 방식
+    def process_by_uia(self, item, hwnd):
+        """병리결과입력 화면의 검사번호 입력창을 AutomationId 로 찾아 입력 → Enter → (기본값 확인) → F9."""
+        cfg = self.cfg
+        if not uia.available():
+            raise StepError("uiautomation 모듈이 없습니다 (pip install uiautomation)")
+        if not cfg.get("uia_field_id"):
+            raise StepError("검사번호 입력창 AutomationId 가 없습니다 → 설정 ▸ [UI 요소 찾기]")
+        pid = w.get_window_pid(hwnd)
+        baseline = set(w.list_popups(pid, exclude=hwnd))
+
+        self.phase("병리결과입력 화면 찾기")
+        field, screen = uia.find_field(hwnd, cfg)
+        if field is None:
+            where = "화면(%s)" % cfg.get("screen_code") if screen is None else "입력창"
+            raise StepError("%s 을(를) 찾지 못했습니다 – 병리결과입력 화면이 열려 있는지 확인" % where)
+
+        fhwnd = uia.native_handle(field)
+        mode = cfg.get("key_send", "auto")
+        use_msg = mode == "message" or (mode == "auto" and fhwnd)
+        if use_msg and not fhwnd:
+            raise StepError("입력창에 창 핸들이 없어 메시지 전송 불가 → Enter/F9 전송을 '키보드'로 변경")
+
+        prev_fg, prev_pos, activated = w.get_foreground(), w.get_cursor_pos(), False
+        try:
+            self.phase("검사번호 입력")
+            if not use_msg:
+                if not w.activate(hwnd):
+                    raise StepError("AMIS 창을 앞으로 가져오지 못했습니다")
+                activated = True
+                self.mark()
+                self.sleep(0.2)
+                self.check_user()
+            if use_msg:
+                w.focus_control(fhwnd)   # 창을 앞으로 가져오지 않고 포커스만
+            else:
+                uia.focus(field)
+            if not uia.set_value(field, item.code):
+                raise StepError("입력창에 값을 넣지 못했습니다 (%s)" % uia.describe(field))
+            self.sleep(0.15)
+            value = uia.get_value(field)
+            norm = lambda t: "".join((t or "").split()).upper()
+            if value is not None and norm(item.code) not in norm(value):
+                raise StepError("검사번호가 입력되지 않았습니다 (입력창 값: '%s')" % value[:30])
+
+            if cfg.get("press_enter", True):
+                self.send_key(fhwnd if use_msg else None, "ENTER", "\r")
+            self.phase("조회 대기")
+            self.sleep(cfg.get("load_wait", 2.0))
+            if not use_msg:
+                self.check_user()
+            err = self.handle_dialogs(pid, hwnd, baseline)
+            if err:
+                raise StepError("조회 오류: " + err)
+
+            if cfg.get("check_default", True):
+                self.check_default_selected(screen or uia.control_from_handle(hwnd))
+
+            if not use_msg:
+                if not w.is_foreground(hwnd):
+                    w.activate(hwnd)
+                    self.mark()
+                    self.sleep(0.2)
+                self.check_user()
+            self.phase("저장 (%s)" % cfg.get("save_key", "F9"))
+            self.send_key(fhwnd if use_msg else None, cfg.get("save_key", "F9"))
+            self.sleep(cfg.get("save_wait", 2.0))
+            err = self.handle_dialogs(pid, hwnd, baseline)
+            if err:
+                raise StepError("저장 오류: " + err)
+        finally:
+            if (activated and cfg.get("restore_focus", True) and prev_fg and prev_fg != hwnd
+                    and w.is_window(prev_fg) and not self.user_input_since_mark()):
+                w.activate(prev_fg)
+                w.set_cursor_pos(*prev_pos)
+                self.mark()
+
+    def send_key(self, target_hwnd, key, char=None):
+        """target_hwnd 가 있으면 메시지로(백그라운드), 없으면 실제 키 입력으로."""
+        if target_hwnd:
+            w.post_key(target_hwnd, key, char)
+        else:
+            w.press(key)
+            self.mark()
+
+    def check_default_selected(self, root):
+        name = (self.cfg.get("default_name") or "").strip()
+        if not name:
+            return
+        ctrl = uia.find_by_name(root, name)
+        if ctrl is None:
+            raise StepError("'%s' 항목을 화면에서 찾지 못해 저장하지 않았습니다" % name)
+        if uia.is_checked(ctrl) is False:
+            raise StepError("'%s' 가 선택되어 있지 않아 저장하지 않았습니다" % name)
 
     def process_by_message(self, item, hwnd, pid, baseline, offset):
         """창을 앞으로 가져오지 않고 메시지를 직접 보내는 방식 (키보드 보안 프로그램 영향 없음)."""

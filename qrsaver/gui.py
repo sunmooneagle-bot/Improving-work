@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from . import __version__
+from . import uia
 from . import win32 as w
 from .config import DEFAULTS, data_path, load_config, save_config
 from .hangul import looks_like_accession, normalize_code
@@ -50,8 +51,10 @@ STATUS_STYLE = {
     FAIL: ("✕ 저장실패", "#fde1e1", "#c62828"),
 }
 
-INPUT_METHODS = [("paste", "붙여넣기 (권장)"), ("unicode", "문자 직접입력"), ("keys", "키보드 키입력"),
+INPUT_METHODS = [("uia", "UI 자동화 · AutomationId (권장)"), ("paste", "붙여넣기"), ("unicode", "문자 직접입력"), ("keys", "키보드 키입력"),
                  ("message", "메시지 직접전송 (백그라운드)")]
+KEY_SENDS = [("auto", "자동 (가능하면 백그라운드)"), ("message", "메시지 (백그라운드)"),
+             ("keyboard", "키보드 (AMIS 앞으로)")]
 TEST_TEXT = "26-T -000000"
 CLEAR_METHODS = [("home_end", "Home → Shift+End 삭제"), ("ctrl_a", "Ctrl+A 삭제"),
                  ("backspace", "Backspace 반복")]
@@ -304,6 +307,7 @@ class App:
         m.add_command(label="  전체 삭제", command=lambda: self.clear_items(None))
         m.add_separator()
         m.add_command(label="  검사번호 칸 위치 지정", command=self.calibrate)
+        m.add_command(label="  UI 요소 찾기 (AutomationId)", command=self.inspect_uia)
         m.add_command(label="  진단 / 입력 테스트", command=self.diagnose)
         m.add_command(label="  관리자 권한으로 다시 실행", command=self.restart_admin)
         m.add_command(label="  축소창", command=self.open_mini)
@@ -345,7 +349,21 @@ class App:
         return f
 
     def _build_settings_tab(self, parent):
-        outer = tk.Frame(parent, bg=C["panel"])
+        holder = tk.Frame(parent, bg=C["panel"])
+        cv = tk.Canvas(holder, bg=C["panel"], highlightthickness=0)
+        sb = ttk.Scrollbar(holder, orient="vertical", command=cv.yview)
+        cv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        cv.pack(side="left", fill="both", expand=True)
+        outer = tk.Frame(cv, bg=C["panel"])
+        win_id = cv.create_window((0, 0), window=outer, anchor="nw")
+        outer.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
+        cv.bind("<Configure>", lambda e: cv.itemconfigure(win_id, width=e.width))
+        wheel = lambda e: cv.yview_scroll(int(-e.delta / 120) or (-1 if e.num == 4 else 1), "units")
+        holder.bind("<Enter>", lambda e: (cv.bind_all("<MouseWheel>", wheel),
+                                          cv.bind_all("<Button-4>", wheel), cv.bind_all("<Button-5>", wheel)))
+        holder.bind("<Leave>", lambda e: (cv.unbind_all("<MouseWheel>"),
+                                          cv.unbind_all("<Button-4>"), cv.unbind_all("<Button-5>")))
         self.vars = {}
 
         def section(title):
@@ -374,19 +392,42 @@ class App:
             self.vars[key] = v
             return ttk.Checkbutton(inner_, text=text, variable=v)
 
-        # 1. AMIS 창 / 위치
-        inner = section("AMIS 창 / 검사번호 칸 위치")
-        v = tk.StringVar(value=self.cfg["window_keyword"])
-        self.vars["window_keyword"] = v
-        row(inner, 0, "창 제목 포함 글자", tk.Entry(inner, textvariable=v, width=20, relief="solid", bd=1),
-            "예) AMIS")
+        def entry(inner_, key, width):
+            v = tk.StringVar(value=str(self.cfg.get(key) or ""))
+            self.vars[key] = v
+            return tk.Entry(inner_, textvariable=v, width=width, relief="solid", bd=1)
+
+        # 0. UI 자동화 (AutomationId)
+        inner = section("병리결과입력 화면 · UI 자동화 (AutomationId)")
+        row(inner, 0, "창 제목 포함 글자", entry(inner, "window_keyword", 20), "예) AMIS")
+        row(inner, 1, "화면 ID", entry(inner, "screen_code", 20), "병리결과입력 화면")
+        row(inner, 2, "검사번호 입력창 ID", entry(inner, "uia_field_id", 28), "AutomationId")
+        row(inner, 3, "화면 컨테이너 ID", entry(inner, "uia_screen_id", 28), "AutomationId (선택)")
+        uf = tk.Frame(inner, bg=C["panel"])
+        _btn(uf, "UI 요소 찾기", self.inspect_uia, bg=C["teal"], fg="white", bold=True).pack(side="left")
+        _btn(uf, "찾기 테스트", self.test_uia).pack(side="left", padx=4)
+        _btn(uf, "진단 / 입력 테스트", self.diagnose, bg=C["pink"], fg=C["red"]).pack(side="left")
+        row(inner, 4, "", uf)
+        tk.Label(inner, text="※ [UI 요소 찾기] 후 5초 안에 마우스를 AMIS 검사번호 입력창 위에 올려 두면 ID가 자동 저장됩니다."
+                 if uia.available() else "※ uiautomation 모듈이 없습니다: pip install uiautomation",
+                 bg=C["panel"], fg=C["red"], font=F, wraplength=560, justify="left").grid(
+            row=5, column=0, columnspan=3, sticky="w")
+        self.keysend_cb = ttk.Combobox(inner, state="readonly", width=24, values=[t for _, t in KEY_SENDS])
+        self.keysend_cb.set(dict(KEY_SENDS).get(self.cfg.get("key_send"), KEY_SENDS[0][1]))
+        row(inner, 6, "Enter / F9 전송", self.keysend_cb)
+        dff = tk.Frame(inner, bg=C["panel"])
+        check(dff, "check_default", "저장 전 기본값 선택 확인:").pack(side="left")
+        entry(dff, "default_name", 28).pack(side="left", padx=4)
+        dff.grid(row=7, column=0, columnspan=3, sticky="w", pady=(2, 0))
+
+        # 1. 좌표 방식 (보조)
+        inner = section("좌표 방식 (UI 자동화가 안 될 때 보조)")
         posf = tk.Frame(inner, bg=C["panel"])
         self.offset_lbl = tk.Label(posf, text=self._offset_text(), bg="white", relief="solid", bd=1,
                                    width=14, font=F)
         self.offset_lbl.pack(side="left")
         _btn(posf, "위치 지정", self.calibrate, bg=C["teal"], fg="white").pack(side="left", padx=4)
         _btn(posf, "위치 확인", self.test_position).pack(side="left")
-        _btn(posf, "진단 / 입력 테스트", self.diagnose, bg=C["pink"], fg=C["red"]).pack(side="left", padx=4)
         row(inner, 1, "검사번호 칸", posf)
         tk.Label(inner, text="※ AMIS 화면의 노란색 검사번호 칸 위치를 한 번 지정해 두면 됩니다.",
                  bg=C["panel"], fg=C["red"], font=F).grid(row=2, column=0, columnspan=3, sticky="w")
@@ -404,7 +445,7 @@ class App:
         inner = section("입력 / 저장 방식")
         self.input_cb = ttk.Combobox(inner, state="readonly", width=20, values=[t for _, t in INPUT_METHODS])
         self.input_cb.set(dict(INPUT_METHODS).get(self.cfg["input_method"], INPUT_METHODS[0][1]))
-        row(inner, 0, "검사번호 입력 방식", self.input_cb, "한/영 상태와 무관하게 입력되는 붙여넣기 권장")
+        row(inner, 0, "검사번호 입력 방식", self.input_cb, "UI 자동화 권장 (좌표 불필요)")
         self.clear_cb = ttk.Combobox(inner, state="readonly", width=20, values=[t for _, t in CLEAR_METHODS])
         self.clear_cb.set(dict(CLEAR_METHODS).get(self.cfg["clear_method"], CLEAR_METHODS[0][1]))
         row(inner, 1, "기존 내용 지우기", self.clear_cb)
@@ -433,7 +474,7 @@ class App:
         bf.pack(fill="x", padx=6, pady=8)
         _btn(bf, "설정 저장", self.save_settings, bg=C["save"], bold=True).pack(side="left")
         _btn(bf, "기본값", self.default_settings).pack(side="left", padx=4)
-        return outer
+        return holder
 
     def _build_log_tab(self, parent):
         f = tk.Frame(parent, bg=C["panel"])
@@ -552,7 +593,17 @@ class App:
                 self.log("작업을 재개합니다.")
             return
         self.apply_settings(silent=True)
-        if not self.cfg.get("field_offset"):
+        if self.cfg.get("input_method") == "uia":
+            if not uia.available():
+                messagebox.showerror("모듈 필요", "UI 자동화를 쓰려면 uiautomation 모듈이 필요합니다.\n"
+                                     "pip install uiautomation", parent=self.root)
+                return
+            if not self.cfg.get("uia_field_id"):
+                messagebox.showwarning("입력창 ID 필요", "먼저 [설정] 탭에서 [UI 요소 찾기] 로\n"
+                                       "AMIS 검사번호 입력창을 지정해 주세요.", parent=self.root)
+                self.nb.select(1)
+                return
+        elif not self.cfg.get("field_offset"):
             messagebox.showwarning("위치 지정 필요",
                                    "먼저 [설정] 탭에서 AMIS 검사번호 칸 위치를 지정해 주세요.", parent=self.root)
             self.nb.select(1)
@@ -742,6 +793,130 @@ class App:
         self.log("검사번호 칸 위치 지정: %s · 컨트롤 [%s] 내용 '%s'" % (
             self._offset_text(), w.class_name(ctrl), (w.get_control_text(ctrl) or "")[:30]))
 
+    # ================================================================ UI 자동화 (AutomationId)
+    def inspect_uia(self):
+        if not uia.available():
+            messagebox.showerror("모듈 필요", "pip install uiautomation 후 다시 실행해 주세요.", parent=self.root)
+            return
+        if self.worker_alive():
+            messagebox.showinfo("안내", "작업을 정지한 뒤 실행해 주세요.", parent=self.root)
+            return
+        self.apply_settings(silent=True)
+        if not messagebox.askokcancel(
+                "UI 요소 찾기",
+                "[확인]을 누른 뒤 5초 안에 마우스 커서를\nAMIS 병리결과입력 화면의 [검사번호 입력창] 위에 올려 두세요.\n\n"
+                "(평소 QR 을 태그하는 그 입력칸입니다. 클릭할 필요는 없습니다)", parent=self.root):
+            return
+        self._inspect_countdown(5)
+
+    def _inspect_countdown(self, n):
+        if n > 0:
+            self.set_phase("요소 찾기 %d…" % n)
+            self.status("마우스를 AMIS 검사번호 입력창 위에 올려 두세요… %d" % n)
+            self.root.after(1000, self._inspect_countdown, n - 1)
+            return
+        x, y = w.get_cursor_pos()
+        self.set_phase("요소 분석 중")
+        threading.Thread(target=self._inspect_thread, args=(x, y), daemon=True).start()
+
+    def _inspect_thread(self, x, y):
+        lines = []
+        add = lines.append
+        save = {}
+        with uia.thread_init():
+            try:
+                ctrl = uia.control_from_point(x, y)
+                add("[UI 요소 찾기] 마우스 위치 %d, %d" % (x, y))
+                add("선택 요소: %s" % uia.describe(ctrl))
+                add("현재 값: '%s'" % (uia.get_value(ctrl) or ""))
+                screen = uia.pick_screen(ctrl, self.cfg.get("screen_code"))
+                add("")
+                add("[상위 요소]")
+                for i, a in enumerate(uia.ancestors(ctrl)):
+                    add("  %s%s%s" % ("  " * min(i, 10), uia.describe(a), "   ◀ 화면" if a is screen else ""))
+                aid = (ctrl.AutomationId if ctrl is not None else "") or ""
+                add("")
+                if screen is None:
+                    add("⚠ 상위 요소 중 화면 ID '%s' 가 포함된 요소를 찾지 못했습니다." % self.cfg.get("screen_code"))
+                if not aid:
+                    add("⚠ 이 요소에는 AutomationId 가 없습니다. 입력칸 정중앙에 마우스를 두고 다시 시도하거나,")
+                    add("   아래 [화면 안의 입력칸 목록] 에서 검사번호 값이 들어 있는 칸의 ID 를 직접 입력하세요.")
+                else:
+                    scope = screen or uia.control_from_handle(
+                        w.find_window(self.cfg.get("window_keyword", "AMIS")))
+                    dup = [c for c in uia.list_edits(scope, 300) if (c.AutomationId or "") == aid] if scope else []
+                    if len(dup) > 1:
+                        add("⚠ 같은 AutomationId 를 가진 입력칸이 %d개 있습니다 (첫 번째 것이 사용됨)." % len(dup))
+                    save["uia_field_id"] = aid
+                    save["uia_screen_id"] = (screen.AutomationId if screen is not None else "") or ""
+                    add("✔ 저장: 검사번호 입력창 ID = '%s', 화면 컨테이너 ID = '%s'"
+                        % (save["uia_field_id"], save["uia_screen_id"]))
+                if screen is not None:
+                    add("")
+                    add("[화면 안의 입력칸 목록]")
+                    for c in uia.list_edits(screen):
+                        add("  %s  값='%s'" % (uia.describe(c), (uia.get_value(c) or "")[:30]))
+            except Exception as e:
+                add("오류: %r" % e)
+        self.emit("call", fn=self._inspect_done, args=(lines, save))
+
+    def _inspect_done(self, lines, save):
+        for k, v in save.items():
+            self.vars[k].set(v)
+        if save:
+            self.input_cb.set(dict(INPUT_METHODS)["uia"])
+            self.apply_settings(silent=True)
+            self.set_phase("입력창 ID 저장됨")
+        else:
+            self.set_phase("대기")
+        self._show_report(lines, "UI 요소 찾기 결과")
+
+    def test_uia(self):
+        if not uia.available():
+            messagebox.showerror("모듈 필요", "pip install uiautomation 후 다시 실행해 주세요.", parent=self.root)
+            return
+        self.apply_settings(silent=True)
+        self.status("병리결과입력 화면에서 검사번호 입력창을 찾는 중…")
+        threading.Thread(target=lambda: self.emit("call", fn=self._show_report,
+                                                  args=(self._uia_report(), "찾기 테스트 결과")),
+                         daemon=True).start()
+
+    def _uia_report(self, test_input=False):
+        """UI 자동화로 입력창/기본값 항목을 찾은 결과 (진단에도 사용)."""
+        lines = []
+        add = lines.append
+        with uia.thread_init():
+            try:
+                hwnd = w.find_window(self.cfg.get("window_keyword", "AMIS"))
+                if not hwnd:
+                    return ["AMIS 창을 찾지 못했습니다."]
+                field, screen = uia.find_field(hwnd, self.cfg)
+                add("[UI 자동화]")
+                add("화면(%s): %s" % (self.cfg.get("screen_code"), uia.describe(screen)))
+                add("검사번호 입력창(ID '%s'): %s" % (self.cfg.get("uia_field_id"), uia.describe(field)))
+                if field is not None:
+                    add("  현재 값: '%s' · 창 핸들 %s → Enter/F9 %s" % (
+                        uia.get_value(field) or "", uia.native_handle(field) or "없음",
+                        "백그라운드 전송 가능" if uia.native_handle(field) else "키보드 전송 필요"))
+                name = self.cfg.get("default_name")
+                if name:
+                    d = uia.find_by_name(screen or uia.control_from_handle(hwnd), name)
+                    st = uia.is_checked(d)
+                    add("기본값 '%s': %s · 선택상태 %s" % (name, uia.describe(d),
+                                                       {True: "선택됨", False: "선택 안 됨", None: "확인불가"}[st]))
+                if test_input and field is not None:
+                    before = uia.get_value(field) or ""
+                    ok = uia.set_value(field, TEST_TEXT)
+                    time.sleep(0.3)
+                    after = uia.get_value(field) or ""
+                    good = ok and "".join(TEST_TEXT.split()) in "".join(after.split()).upper()
+                    uia.set_value(field, before)
+                    add("입력 테스트 - UI 자동화: %s (넣은 뒤 값 '%s')" % ("성공" if good else "실패", after[:30]))
+                    lines.append(("__result__", good))
+            except Exception as e:
+                add("오류: %r" % e)
+        return lines
+
     # ================================================================ 권한 / 진단
     def check_privilege(self):
         """AMIS 가 관리자 권한이고 이 프로그램은 아니면, Windows 가 입력을 막는다 (UIPI)."""
@@ -820,9 +995,19 @@ class App:
             add("검사번호 칸 위치: 미지정")
 
         results = {}
+        if uia.available():
+            add("")
+            for line in self._uia_report(test_input=do_test):
+                if isinstance(line, tuple):
+                    results["uia"] = line[1]
+                else:
+                    add(line)
+            add("")
+        else:
+            add("UI 자동화: uiautomation 모듈 없음 (pip install uiautomation)")
         if do_test and off and ctrl and ctrl != hwnd:
             readable = w.get_control_text(ctrl) is not None and w.is_edit_like(ctrl)
-            for key, label in INPUT_METHODS:
+            for key, label in INPUT_METHODS[1:]:
                 ok = self._test_method(hwnd, ctrl, fx, fy, key) if readable else None
                 results[key] = ok
                 add("입력 테스트 - %s: %s" % (label, {True: "성공", False: "실패", None: "확인불가(내용 읽기 불가)"}[ok]))
@@ -876,21 +1061,21 @@ class App:
         self.input_cb.set(dict(INPUT_METHODS)[method])
         self.apply_settings(silent=True)
 
-    def _show_report(self, lines):
+    def _show_report(self, lines, title="진단 결과"):
         text = "\n".join(lines)
         for line in lines:
             if line:
-                self.log("진단 " + line)
+                self.log(title.split()[0] + " " + line)
         self.status("진단 완료")
         self.root.deiconify()
         self.root.lift()
         win = tk.Toplevel(self.root)
-        win.title("진단 결과")
+        win.title(title)
         win.configure(bg=C["panel"])
         win.transient(self.root)
         hdr = tk.Frame(win, bg=C["teal"])
         hdr.pack(fill="x")
-        tk.Label(hdr, text="☑ 진단 결과 (아래 내용을 복사해서 전달해 주세요)", bg=C["teal"], fg="white",
+        tk.Label(hdr, text="☑ %s (아래 내용을 복사해서 전달해 주세요)" % title, bg=C["teal"], fg="white",
                  font=F_B).pack(side="left", padx=6, pady=3)
         t = tk.Text(win, font=(FONT_NAME, 9), width=90, height=20, wrap="word", relief="flat")
         t.insert("1.0", text)
@@ -933,11 +1118,14 @@ class App:
             if not silent:
                 messagebox.showerror("오류", "숫자 설정값을 확인해 주세요.", parent=self.root)
             return False
-        for key in ("window_keyword", "fail_keywords"):
+        for key in ("window_keyword", "fail_keywords", "screen_code", "uia_field_id", "uia_screen_id",
+                    "default_name"):
             new[key] = self.vars[key].get().strip()
-        for key in ("press_enter", "auto_close_dialogs", "restore_focus", "fix_hangul", "uppercase"):
+        new["key_send"] = {t: k for k, t in KEY_SENDS}.get(self.keysend_cb.get(), "auto")
+        for key in ("press_enter", "auto_close_dialogs", "restore_focus", "fix_hangul", "uppercase",
+                    "check_default"):
             new[key] = bool(self.vars[key].get())
-        new["input_method"] = {t: k for k, t in INPUT_METHODS}.get(self.input_cb.get(), "paste")
+        new["input_method"] = {t: k for k, t in INPUT_METHODS}.get(self.input_cb.get(), "uia")
         new["clear_method"] = {t: k for k, t in CLEAR_METHODS}.get(self.clear_cb.get(), "home_end")
         new["save_key"] = self.savekey_cb.get() or "F9"
         self.cfg.update(new)  # 작업 스레드와 같은 dict 를 공유 → 즉시 반영
@@ -950,15 +1138,16 @@ class App:
             self.log("설정 저장")
 
     def default_settings(self):
-        if not messagebox.askyesno("기본값", "검사번호 칸 위치를 제외한 설정을 기본값으로 되돌릴까요?",
+        if not messagebox.askyesno("기본값", "검사번호 칸 위치/ID 를 제외한 설정을 기본값으로 되돌릴까요?",
                                    parent=self.root):
             return
         for k, v in DEFAULTS.items():
-            if k in self.vars:
+            if k in self.vars and k not in ("uia_field_id", "uia_screen_id"):
                 self.vars[k].set(v if not isinstance(v, float) else self._fmt(v))
         self.input_cb.set(dict(INPUT_METHODS)[DEFAULTS["input_method"]])
         self.clear_cb.set(dict(CLEAR_METHODS)[DEFAULTS["clear_method"]])
         self.savekey_cb.set(DEFAULTS["save_key"])
+        self.keysend_cb.set(dict(KEY_SENDS)[DEFAULTS["key_send"]])
         self.save_settings()
 
     # ================================================================ 축소창

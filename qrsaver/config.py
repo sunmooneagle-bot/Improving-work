@@ -10,7 +10,13 @@ DEFAULTS = {
     "load_wait": 2.0,                  # 검사번호 입력+Enter 후 조회 대기
     "save_wait": 2.0,                  # F9 후 저장 대기
     "item_interval": 1.0,              # 항목 사이 간격
-    "input_method": "paste",           # paste | unicode | keys
+    "input_method": "uia",             # uia | paste | unicode | keys | message
+    "screen_code": "VSPSSPR059S",      # 병리결과입력 화면 ID
+    "uia_screen_id": "",               # 화면 컨테이너 AutomationId (UI 요소 찾기로 자동 저장)
+    "uia_field_id": "",                # 검사번호 입력창 AutomationId (UI 요소 찾기로 자동 저장)
+    "key_send": "auto",                # Enter/F9 전송: auto | message | keyboard
+    "check_default": True,             # 저장 전 기본값(Negative) 선택 여부 확인
+    "default_name": "Negative for malignant cells",
     "clear_method": "home_end",        # home_end | ctrl_a | backspace
     "press_enter": True,               # 입력 후 Enter 로 조회
     "save_key": "F9",
