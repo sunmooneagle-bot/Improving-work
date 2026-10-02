@@ -3,7 +3,10 @@ import json
 import os
 import sys
 
+CONFIG_VERSION = 3
+
 DEFAULTS = {
+    "config_version": CONFIG_VERSION,
     "window_keyword": "AMIS",          # AMIS 창 제목에 포함된 글자
     "field_offset": None,              # 검사번호 칸 위치 [x, y] (AMIS 창 왼쪽 위 기준)
     "idle_seconds": 5.0,               # 사용자가 이 시간 이상 입력이 없을 때만 작업
@@ -18,7 +21,8 @@ DEFAULTS = {
     "check_default": True,             # 저장 전 기본값(Negative) 선택 여부 확인
     "default_name": "Negative for malignant cells",
     "clear_method": "home_end",        # home_end | ctrl_a | backspace
-    "press_enter": True,               # 입력 후 Enter 로 조회
+    "press_enter": False,              # 입력 후 Enter 전송 (AMIS 는 입력만으로 조회되므로 기본 꺼짐)
+    "check_loaded": True,              # F9 전 화면에 해당 검사번호가 조회됐는지 확인
     "save_key": "F9",
     "auto_close_dialogs": True,        # 확인/알림창 Enter 로 자동 처리
     "fail_keywords": "실패,오류,에러,error,없습니다,존재하지,권한,잘못",
@@ -51,6 +55,9 @@ def load_config():
         with open(data_path("settings.json"), encoding="utf-8") as f:
             saved = json.load(f)
         cfg.update({k: v for k, v in saved.items() if k in DEFAULTS})
+        if int(saved.get("config_version", 1) or 1) < 3:
+            cfg["press_enter"] = False  # v1.3: Enter 불필요
+        cfg["config_version"] = CONFIG_VERSION
     except (OSError, ValueError):
         pass
     return cfg

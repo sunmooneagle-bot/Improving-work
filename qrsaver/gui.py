@@ -455,7 +455,8 @@ class App:
         row(inner, 2, "저장 키", self.savekey_cb, "Action ▸ 저장 [F9]")
         checks = tk.Frame(inner, bg=C["panel"])
         checks.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        for i, (key, text) in enumerate([("press_enter", "입력 후 Enter 로 조회"),
+        for i, (key, text) in enumerate([("press_enter", "입력 후 Enter 전송 (보통 불필요)"),
+                                         ("check_loaded", "F9 전 조회 결과 확인 (이전 검사 재저장 방지)"),
                                          ("auto_close_dialogs", "확인/알림창 자동 처리(Enter)"),
                                          ("restore_focus", "작업 후 원래 사용하던 창으로 복귀"),
                                          ("fix_hangul", "한글 상태 스캔 자동 보정 (ㅊ→C)"),
@@ -1122,7 +1123,7 @@ class App:
                     "default_name"):
             new[key] = self.vars[key].get().strip()
         new["key_send"] = {t: k for k, t in KEY_SENDS}.get(self.keysend_cb.get(), "auto")
-        for key in ("press_enter", "auto_close_dialogs", "restore_focus", "fix_hangul", "uppercase",
+        for key in ("press_enter", "check_loaded", "auto_close_dialogs", "restore_focus", "fix_hangul", "uppercase",
                     "check_default"):
             new[key] = bool(self.vars[key].get())
         new["input_method"] = {t: k for k, t in INPUT_METHODS}.get(self.input_cb.get(), "uia")

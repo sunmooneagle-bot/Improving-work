@@ -201,7 +201,7 @@ class Worker(threading.Thread):
             self.verify_input(w.control_at(hwnd, fx, fy), item.code)
             self.check_user()
 
-            if cfg.get("press_enter", True):
+            if cfg.get("press_enter", False):
                 w.press("ENTER")
                 self.mark()
             self.phase("조회 대기")
@@ -276,7 +276,7 @@ class Worker(threading.Thread):
             if value is not None and norm(item.code) not in norm(value):
                 raise StepError("검사번호가 입력되지 않았습니다 (입력창 값: '%s')" % value[:30])
 
-            if cfg.get("press_enter", True):
+            if cfg.get("press_enter", False):
                 self.send_key(fhwnd if use_msg else None, "ENTER", "\r")
             self.phase("조회 대기")
             self.sleep(cfg.get("load_wait", 2.0))
@@ -286,6 +286,8 @@ class Worker(threading.Thread):
             if err:
                 raise StepError("조회 오류: " + err)
 
+            if cfg.get("check_loaded", True):
+                self.check_loaded(screen or uia.control_from_handle(hwnd), field, item.code)
             if cfg.get("check_default", True):
                 self.check_default_selected(screen or uia.control_from_handle(hwnd))
 
@@ -316,6 +318,17 @@ class Worker(threading.Thread):
             w.press(key)
             self.mark()
 
+    def check_loaded(self, root, field, code):
+        """입력창 말고 화면의 다른 곳(병리번호 칸, 목록 등)에 검사번호가 표시돼야 조회된 것으로 본다.
+        조회가 안 됐는데 F9 를 누르면 이전 검사가 다시 저장될 수 있으므로 반드시 확인한다."""
+        deadline = time.monotonic() + 5.0
+        while True:
+            if uia.find_showing(root, code, exclude=field) is not None:
+                return
+            if time.monotonic() >= deadline or self.stop_event.is_set():
+                raise StepError("화면에 %s 가 조회되지 않아 저장하지 않았습니다" % code)
+            self.sleep(0.5)
+
     def check_default_selected(self, root):
         name = (self.cfg.get("default_name") or "").strip()
         if not name:
@@ -341,7 +354,7 @@ class Worker(threading.Thread):
         self.sleep(0.1)
         self.verify_input(ctrl, item.code)
 
-        if cfg.get("press_enter", True):
+        if cfg.get("press_enter", False):
             w.post_key(ctrl, "ENTER", "\r")
         self.phase("조회 대기")
         self.sleep(cfg.get("load_wait", 2.0))

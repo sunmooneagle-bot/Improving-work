@@ -144,6 +144,36 @@ def find_field(hwnd, cfg):
     return field, screen
 
 
+def _norm(t):
+    return "".join((t or "").split()).upper()
+
+
+def find_showing(root, code, exclude=None, limit=800):
+    """root 안에서 (exclude 제외) 값이나 이름에 code 가 표시된 Edit/Text/DataItem 요소."""
+    if root is None:
+        return None
+    target = _norm(code)
+    cli = _client()
+    cond = cli.CreateOrCondition(
+        cli.CreateOrCondition(cli.CreatePropertyCondition(PROP_CONTROL_TYPE, 50004),
+                              cli.CreatePropertyCondition(PROP_CONTROL_TYPE, 50020)),
+        cli.CreatePropertyCondition(PROP_CONTROL_TYPE, 50029))
+    arr = root.Element.FindAll(TREE_DESCENDANTS, cond)
+    if not arr:
+        return None
+    ex = exclude.Element if exclude is not None else None
+    for i in range(min(arr.Length, limit)):
+        el = arr.GetElement(i)
+        if ex is not None and _safe(lambda: cli.CompareElements(el, ex), 0):
+            continue
+        c = _wrap(el)
+        if c is None:
+            continue
+        if target in _norm(_safe(lambda: c.Name)) or target in _norm(get_value(c)):
+            return c
+    return None
+
+
 def find_by_name(root, name):
     return _find_first(root, PROP_NAME, name) if root is not None and name else None
 
