@@ -868,12 +868,17 @@ class App:
 
     def split_qr(self, raw):
         """QR 원문 → (목록용 검사번호, AMIS 에 다시 입력할 검사번호 원문, 검사코드).
-        '26C 054730;A;1;;FB0164;1' → ('26-C -054730', '26C 054730', 'FB0164')"""
+        예전 QR('26-C -053637') 은 예전과 완전히 같게 처리하고,
+        새 QR '26C 054730;A;1;;FB0164;1' 은 검사번호를 예전 QR 모양 '26-C -054730' 으로 바꾼 뒤
+        예전과 같은 방식으로 처리 → 병리결과입력에 번호를 넣는 방식은 그대로."""
         fix, up = self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True)
-        text = normalize_code(raw, fix, up, False)
-        number, exam_code = exam.parse_qr(text)
-        code = normalize_code(number, False, False, self.cfg.get("amis_space", True))
-        return code, number, exam_code
+        exam_code = ""
+        if ";" in raw:
+            number, exam_code = exam.parse_qr(normalize_code(raw, fix, up, False))
+            raw = exam.old_style_number(number)
+        code = normalize_code(raw, fix, up, self.cfg.get("amis_space", True))
+        raw_qr = normalize_code(raw, fix, up, False)
+        return code, raw_qr, exam_code
 
     def load_exam_codes(self, log=True):
         """검사코드표 엑셀을 (다시) 읽고, 목록의 검사명을 갱신."""

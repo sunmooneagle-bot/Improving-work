@@ -66,7 +66,7 @@ DEFAULTS = {
     "limit_checks_by_exam": True,      # QR 검사코드의 검체 종류에 맞는 체크 칸만 활성화
     # 검체 분류: "분류=검사명에 들어 있는 글자(쉼표 구분)" 을 | 로 구분 (대소문자 무시)
     "exam_categories": ("urine=urine,bladder irrigation|"
-                        "inst=catheter urine,washed urine,bladder irrigation|"
+                        "inst=washed urine,bladder irrigation|"
                         "gyn=cervical,vaginal,endometrial|"
                         "cellblock=cell block"),
     # 체크 칸별로 활성화할 검체 분류: "컬럼제목=분류" 를 | 로 구분 (여기 없는 칸은 항상 활성)

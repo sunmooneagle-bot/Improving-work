@@ -32,11 +32,11 @@ def hangul_to_qwerty(text):
     return "".join(out)
 
 
-_AMIS_RE = re.compile(r"^(\d{2})\s*-?\s*([A-Za-z]{1,2})\s*-?\s*(\d{3,})$")
+_AMIS_RE = re.compile(r"^(\d{2})-([A-Za-z]{1,2})\s*-\s*(\d{3,})$")
 
 
 def amis_format(code):
-    """검사번호를 AMIS 화면 표기로 통일: '26-S-082711' / '26-S  - 082711' / '26S 082711' → '26-S -082711'.
+    """검사번호를 AMIS 화면 표기로 통일: '26-S-082711' / '26-S  - 082711' → '26-S -082711'.
     형식이 다르면 그대로 둔다."""
     m = _AMIS_RE.match((code or "").strip())
     if not m:
@@ -57,7 +57,7 @@ def normalize_code(raw, fix_hangul=True, uppercase=True, amis_space=True):
     return code
 
 
-_PATTERN = re.compile(r"^\d{2}\s*-?\s*[A-Z]{1,2}\s*-?\s*\d{3,}$")
+_PATTERN = re.compile(r"^\d{2}-[A-Z]{1,2}\s*-\s*\d{3,}$")
 
 
 def looks_like_accession(code):

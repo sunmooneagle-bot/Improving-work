@@ -25,6 +25,18 @@ def parse_qr(text):
     return parts[0], code
 
 
+_NUM_RE = re.compile(r"^(\d{2})\s*([A-Za-z]{1,2})\s+(\d{3,})$")
+
+
+def old_style_number(number):
+    """새 QR 의 검사번호 '26C 054730' → 예전 QR 과 같은 모양 '26-C -054730'.
+    (병리결과입력에 번호를 넣는 방식은 예전 QR 과 똑같이 유지하기 위함) 다른 모양이면 그대로."""
+    m = _NUM_RE.match((number or "").strip())
+    if not m:
+        return number
+    return "%s-%s -%s" % (m.group(1), m.group(2), m.group(3))
+
+
 # 내장 검사코드표 (검사코드.xlsx 기준)
 BUILTIN = {
     'FB0001': 'Adrenal gland (EUS guided FNA)(Des)[Smear with cell block]',

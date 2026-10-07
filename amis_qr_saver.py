@@ -81,7 +81,7 @@ DEFAULTS = {
     "limit_checks_by_exam": True,      # QR 검사코드의 검체 종류에 맞는 체크 칸만 활성화
     # 검체 분류: "분류=검사명에 들어 있는 글자(쉼표 구분)" 을 | 로 구분 (대소문자 무시)
     "exam_categories": ("urine=urine,bladder irrigation|"
-                        "inst=catheter urine,washed urine,bladder irrigation|"
+                        "inst=washed urine,bladder irrigation|"
                         "gyn=cervical,vaginal,endometrial|"
                         "cellblock=cell block"),
     # 체크 칸별로 활성화할 검체 분류: "컬럼제목=분류" 를 | 로 구분 (여기 없는 칸은 항상 활성)
@@ -221,11 +221,11 @@ def hangul_to_qwerty(text):
     return "".join(out)
 
 
-_AMIS_RE = re.compile(r"^(\d{2})\s*-?\s*([A-Za-z]{1,2})\s*-?\s*(\d{3,})$")
+_AMIS_RE = re.compile(r"^(\d{2})-([A-Za-z]{1,2})\s*-\s*(\d{3,})$")
 
 
 def amis_format(code):
-    """검사번호를 AMIS 화면 표기로 통일: '26-S-082711' / '26-S  - 082711' / '26S 082711' → '26-S -082711'.
+    """검사번호를 AMIS 화면 표기로 통일: '26-S-082711' / '26-S  - 082711' → '26-S -082711'.
     형식이 다르면 그대로 둔다."""
     m = _AMIS_RE.match((code or "").strip())
     if not m:
@@ -246,7 +246,7 @@ def normalize_code(raw, fix_hangul=True, uppercase=True, amis_space=True):
     return code
 
 
-_PATTERN = re.compile(r"^\d{2}\s*-?\s*[A-Z]{1,2}\s*-?\s*\d{3,}$")
+_PATTERN = re.compile(r"^\d{2}-[A-Z]{1,2}\s*-\s*\d{3,}$")
 
 
 def looks_like_accession(code):
@@ -441,6 +441,18 @@ def parse_qr(text):
     parts = [p.strip() for p in text.split(";")]
     code = next((p.upper() for p in parts[1:] if _CODE_RE.match(p.upper())), "")
     return parts[0], code
+
+
+_NUM_RE = re.compile(r"^(\d{2})\s*([A-Za-z]{1,2})\s+(\d{3,})$")
+
+
+def old_style_number(number):
+    """새 QR 의 검사번호 '26C 054730' → 예전 QR 과 같은 모양 '26-C -054730'.
+    (병리결과입력에 번호를 넣는 방식은 예전 QR 과 똑같이 유지하기 위함) 다른 모양이면 그대로."""
+    m = _NUM_RE.match((number or "").strip())
+    if not m:
+        return number
+    return "%s-%s -%s" % (m.group(1), m.group(2), m.group(3))
 
 
 # 내장 검사코드표 (검사코드.xlsx 기준)
@@ -3883,12 +3895,17 @@ class App:
 
     def split_qr(self, raw):
         """QR 원문 → (목록용 검사번호, AMIS 에 다시 입력할 검사번호 원문, 검사코드).
-        '26C 054730;A;1;;FB0164;1' → ('26-C -054730', '26C 054730', 'FB0164')"""
+        예전 QR('26-C -053637') 은 예전과 완전히 같게 처리하고,
+        새 QR '26C 054730;A;1;;FB0164;1' 은 검사번호를 예전 QR 모양 '26-C -054730' 으로 바꾼 뒤
+        예전과 같은 방식으로 처리 → 병리결과입력에 번호를 넣는 방식은 그대로."""
         fix, up = self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True)
-        text = normalize_code(raw, fix, up, False)
-        number, exam_code = exam.parse_qr(text)
-        code = normalize_code(number, False, False, self.cfg.get("amis_space", True))
-        return code, number, exam_code
+        exam_code = ""
+        if ";" in raw:
+            number, exam_code = exam.parse_qr(normalize_code(raw, fix, up, False))
+            raw = exam.old_style_number(number)
+        code = normalize_code(raw, fix, up, self.cfg.get("amis_space", True))
+        raw_qr = normalize_code(raw, fix, up, False)
+        return code, raw_qr, exam_code
 
     def load_exam_codes(self, log=True):
         """검사코드표 엑셀을 (다시) 읽고, 목록의 검사명을 갱신."""

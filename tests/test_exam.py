@@ -21,9 +21,10 @@ class ParseQrTest(unittest.TestCase):
     def test_old_format(self):
         self.assertEqual(exam.parse_qr("26-C -053637"), ("26-C -053637", ""))
 
-    def test_amis_format(self):
-        self.assertEqual(normalize_code("26C 054730"), "26-C -054730")
-        self.assertEqual(normalize_code("26-S-082711"), "26-S -082711")
+    def test_old_style_number(self):
+        self.assertEqual(exam.old_style_number("26C 054730"), "26-C -054730")
+        self.assertEqual(normalize_code(exam.old_style_number("26C 054730")), "26-C -054730")
+        self.assertEqual(exam.old_style_number("26-S-082711"), "26-S-082711")
 
 
 class TableTest(unittest.TestCase):
@@ -55,7 +56,8 @@ class EnableTest(unittest.TestCase):
 
     def test_categories(self):
         self.assertEqual(self.enabled("FB0164"), {"Urine <30ml", "UC absent"})                 # Voided urine
-        self.assertEqual(self.enabled("FB0049"), {"Urine <30ml", "UC absent", "Inst 10~20", "Inst <10"})  # Catheter
+        self.assertEqual(self.enabled("FB0049"), {"Urine <30ml", "UC absent"})                 # Catheter = voided
+        self.assertEqual(self.enabled("FB0195"), {"Urine <30ml", "UC absent", "Inst 10~20", "Inst <10"})  # Bladder irr.
         self.assertEqual(self.enabled("FB0161"), {"Vaginal"})                                   # Vaginal scrape
         self.assertEqual(self.enabled("FB0050"), {"Vaginal"})                                   # Cervical scrape
         self.assertEqual(self.enabled("FB0175"), {"Cell block 부적합"})                          # Pleural + cell block

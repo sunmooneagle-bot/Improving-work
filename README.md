@@ -20,7 +20,7 @@ AMIS **병리결과입력** 화면에서 검사번호를 하나씩 조회하고 
 
 새 검사의뢰서 QR 은 `26C 054730;A;1;;FB0164;1` 형식입니다.
 
-- `26C 054730` → **검사번호** (기존처럼 AMIS 조회에 사용, 목록에는 `26-C -054730` 으로 표시)
+- `26C 054730` → **검사번호**. 예전 QR 과 같은 모양 `26-C -054730` 으로 바꿔서 처리하므로 병리결과입력에 번호를 넣는 방식은 예전과 똑같습니다
 - `A;1;` 등 나머지 칸은 무시
 - `FB0164` → **검사코드**. `검사코드.xlsx`(A열 처방코드, B열 처방영문명)에서 찾아 목록 **검사명** 컬럼에 표시
   (엑셀이 없으면 프로그램 안의 내장 표 사용, 설정 ▸ *검사코드표 엑셀* 에서 파일 지정 / 다시 불러오기)
@@ -31,7 +31,7 @@ AMIS **병리결과입력** 화면에서 검사번호를 하나씩 조회하고 
 | 체크 칸 | 활성화되는 검체 (검사명에 포함된 글자) |
 |---|---|
 | Urine <30ml, UC absent | urine, bladder irrigation |
-| Inst 10~20, Inst <10 | catheter urine, washed urine, bladder irrigation (Instrumented urine) |
+| Inst 10~20, Inst <10 | bladder irrigation, washed urine (Instrumented urine) — Catheter urine 은 voided 와 같이 취급 |
 | Vaginal | cervical, vaginal, endometrial (GYN) |
 | Cell block 부적합 | cell block |
 
