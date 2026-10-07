@@ -137,6 +137,7 @@ if IS_WINDOWS:
     _sig(user32.SetFocus, (wintypes.HWND,), wintypes.HWND)
     _sig(user32.GetFocus, (), wintypes.HWND)
     _sig(user32.IsWindowEnabled, (wintypes.HWND,))
+    _sig(user32.GetKeyState, (ctypes.c_int,), ctypes.c_short)
     _sig(kernel32.OpenProcess, (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD), wintypes.HANDLE)
     _sig(kernel32.CloseHandle, (wintypes.HANDLE,))
     _sig(kernel32.GetCurrentProcess, (), wintypes.HANDLE)
@@ -238,8 +239,12 @@ def get_window_rect(hwnd):
     return (r.left, r.top, r.right, r.bottom)
 
 
+AMIS_CLASS_PREFIX = "WindowsForms10."   # AMIS(WinForms) 창 클래스. VS Code/브라우저(Chrome_WidgetWin_1) 등은 제외
+
+
 def find_window(keyword):
-    """제목에 keyword 가 포함된 (자기 자신 제외) 가장 큰 최상위 창."""
+    """제목에 keyword 가 포함된 (자기 자신 제외) 가장 큰 최상위 'WinForms' 창.
+    클래스로 거르지 않으면 제목에 'amis' 가 들어간 VS Code·탐색기 창(예: amis_qr_saver.py)을 AMIS 로 착각한다."""
     if not IS_WINDOWS or not keyword:
         return None
     own_pid = kernel32.GetCurrentProcessId()
@@ -249,6 +254,8 @@ def find_window(keyword):
         if user32.GetWindow(hwnd, GW_OWNER):
             continue
         if get_window_pid(hwnd) == own_pid:
+            continue
+        if not class_name(hwnd).startswith(AMIS_CLASS_PREFIX):
             continue
         if kw not in _window_text(hwnd).lower():
             continue
@@ -390,16 +397,40 @@ def type_unicode(text):
         time.sleep(0.015)
 
 
-def type_keys(text):
-    """가상 키 코드로 입력 (한글 IME 상태의 영향을 받을 수 있음)."""
+def caps_lock_on():
+    return bool(IS_WINDOWS and user32.GetKeyState(0x14) & 1)
+
+
+def ime_english(hwnd):
+    """hwnd 입력칸의 한/영 상태를 영문으로 (QR 스캐너가 한글 상태일 때 'ㅊ' 이 들어가는 것 방지). 최선 시도."""
+    if not IS_WINDOWS or not hwnd:
+        return False
+    try:
+        imm = ctypes.WinDLL("imm32")
+        imm.ImmGetDefaultIMEWnd.argtypes = (wintypes.HWND,)
+        imm.ImmGetDefaultIMEWnd.restype = wintypes.HWND
+        ime = imm.ImmGetDefaultIMEWnd(hwnd)
+        if not ime:
+            return False
+        _send_msg(ime, 0x0283, 0x0002, 0)   # WM_IME_CONTROL, IMC_SETCONVERSIONMODE, 영문(0)
+        return True
+    except Exception:
+        return False
+
+
+def type_keys(text, delay=0.04):
+    """실제 가상 키로 입력 (QR 스캐너와 같은 방식). 글자 사이 delay 초. CapsLock 이 켜져 있어도 대소문자 유지."""
     if not IS_WINDOWS:
         return
+    caps = caps_lock_on()
     for ch in text:
         res = user32.VkKeyScanW(ch)
         if res == -1:
             type_unicode(ch)
             continue
         vk, shift = res & 0xFF, (res >> 8) & 1
+        if caps and ch.isalpha():
+            shift ^= 1
         seq = []
         if shift:
             seq.append(_key_input(KEY_CODES["SHIFT"], False))
@@ -407,7 +438,7 @@ def type_keys(text):
         if shift:
             seq.append(_key_input(KEY_CODES["SHIFT"], True))
         _send(seq)
-        time.sleep(0.015)
+        time.sleep(delay)
 
 
 def get_cursor_pos():
@@ -537,8 +568,130 @@ def control_at(root_hwnd, sx, sy):
     return h
 
 
+def is_visible(hwnd):
+    return bool(IS_WINDOWS and hwnd and user32.IsWindowVisible(hwnd))
+
+
+_Z_HOLD = [0.0]
+
+
+def hold_z(secs):
+    """secs 초 동안 프로그램 창을 AMIS 위로 올리지 않음 (실제 마우스 클릭 중)."""
+    _Z_HOLD[0] = time.monotonic() + secs
+
+
+def z_held():
+    return time.monotonic() < _Z_HOLD[0]
+
+
+def own_windows():
+    """이 프로그램의 화면에 보이는 최상위 창들."""
+    if not IS_WINDOWS:
+        return []
+    pid = kernel32.GetCurrentProcessId()
+    return [h for h in _top_windows() if get_window_pid(h) == pid]
+
+
+def is_topmost(hwnd):
+    return bool(IS_WINDOWS and hwnd and user32.GetWindowLongW(wintypes.HWND(hwnd), -20) & 0x8)
+
+
+def set_z(hwnd, after):
+    """after: -1 항상위, -2 항상위 해제, 1 맨 아래 (활성화/이동/크기 변경 없음)."""
+    if IS_WINDOWS and hwnd:
+        user32.SetWindowPos(wintypes.HWND(hwnd), wintypes.HWND(after), 0, 0, 0, 0, 0x0013)
+
+
 def is_edit_like(hwnd):
     return "edit" in class_name(hwnd).lower()
+
+
+# ---------------------------------------------------------------- MDI 화면 (AMIS 안의 화면 탭)
+WM_MDIACTIVATE, WM_MDIGETACTIVE = 0x0222, 0x0229
+
+
+def find_children_by_text(parent, names, visible_only=True):
+    """parent 아래 모든 자식 창 중 글자가 names 중 하나인 창 핸들들 (Win32, 매우 빠름)."""
+    if not IS_WINDOWS or not parent:
+        return []
+    want = set(names)
+    out = []
+
+    def cb(h, _):
+        if (not visible_only or user32.IsWindowVisible(h)) and _window_text(h).strip() in want:
+            out.append(h)
+        return True
+
+    user32.EnumChildWindows(parent, WNDENUMPROC(cb), 0)
+    return out
+
+
+def parent_of(hwnd):
+    return user32.GetAncestor(hwnd, 1) if IS_WINDOWS and hwnd else 0   # GA_PARENT
+
+
+def find_mdi_child(main_hwnd, code):
+    """AMIS 안의 화면(MDI 자식 창) 중 제목에 code(예: VSPSSPR059S)가 들어간 창.
+    뒤에 깔려 있거나 숨겨진(탭 뒤) 화면도 찾는다."""
+    if not IS_WINDOWS or not main_hwnd or not code:
+        return None
+    code = code.lower()
+    clients = []
+
+    def cb(h, _):
+        if "MDICLIENT" in class_name(h).upper():
+            clients.append(h)
+        return True
+
+    user32.EnumChildWindows(main_hwnd, WNDENUMPROC(cb), 0)
+    for mc in clients:
+        h = user32.GetWindow(mc, 5)          # GW_CHILD
+        while h:
+            if code in _window_text(h).lower():
+                return h
+            h = user32.GetWindow(h, 2)       # GW_HWNDNEXT
+    return None
+
+
+def is_iconic(hwnd):
+    return bool(IS_WINDOWS and hwnd and user32.IsIconic(hwnd))
+
+
+def show_no_activate(hwnd):
+    """최소화된 창을 원래 크기로 (포커스는 가져오지 않음)."""
+    if IS_WINDOWS and hwnd:
+        user32.ShowWindow(hwnd, 4)           # SW_SHOWNOACTIVATE
+        time.sleep(0.3)
+
+
+def mdi_client_of(child):
+    """AMIS 화면(MDI 자식 창)의 부모 MDICLIENT. 아니면 None."""
+    if not IS_WINDOWS or not child:
+        return None
+    p = user32.GetAncestor(child, 1)  # GA_PARENT
+    return p if p and "MDICLIENT" in class_name(p).upper() else None
+
+
+def mdi_active(child):
+    """child 와 같은 MDICLIENT 에서 현재 활성화된 화면 핸들."""
+    mc = mdi_client_of(child)
+    if not mc:
+        return None
+    return _send_msg(mc, WM_MDIGETACTIVE, 0, 0) or None
+
+
+def mdi_activate(child, tries=3):
+    """AMIS 안에서 해당 화면(예: 병리결과입력)을 활성 화면으로 만든다. 확인까지 성공해야 True.
+    Enter/F9 같은 단축키는 '활성 화면'이 처리하므로, 결과조회 화면이 활성이면 그쪽에서 동작한다."""
+    mc = mdi_client_of(child)
+    if not mc:
+        return False
+    for _ in range(tries):
+        if int(_send_msg(mc, WM_MDIGETACTIVE, 0, 0) or 0) == int(child):
+            return True
+        _send_msg(mc, WM_MDIACTIVATE, int(child), 0)
+        time.sleep(0.2)
+    return int(_send_msg(mc, WM_MDIGETACTIVE, 0, 0) or 0) == int(child)
 
 
 def _send_msg(hwnd, msg, wparam, lparam, timeout=2000):

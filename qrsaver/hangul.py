@@ -32,13 +32,28 @@ def hangul_to_qwerty(text):
     return "".join(out)
 
 
-def normalize_code(raw, fix_hangul=True, uppercase=True):
-    """스캔된 문자열을 검사번호로 정리 (앞뒤 공백/개행 제거, 내부 공백은 유지)."""
+_AMIS_RE = re.compile(r"^(\d{2})-([A-Za-z]{1,2})\s*-\s*(\d{3,})$")
+
+
+def amis_format(code):
+    """검사번호를 AMIS 화면 표기로 통일: '26-S-082711' / '26-S  - 082711' → '26-S -082711'.
+    형식이 다르면 그대로 둔다."""
+    m = _AMIS_RE.match((code or "").strip())
+    if not m:
+        return code
+    return "%s-%s -%s" % (m.group(1), m.group(2).upper(), m.group(3))
+
+
+def normalize_code(raw, fix_hangul=True, uppercase=True, amis_space=True):
+    """스캔된 문자열을 검사번호로 정리 (앞뒤 공백/개행 제거).
+    amis_space=True 면 QR 의 '26-S-082711' 을 AMIS 표기 '26-S -082711' 로 바꾼다."""
     code = raw.replace("\r", "").replace("\n", "").replace("\t", "").strip()
     if fix_hangul:
         code = hangul_to_qwerty(code)
     if uppercase:
         code = code.upper()
+    if amis_space:
+        code = amis_format(code)
     return code
 
 
