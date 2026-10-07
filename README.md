@@ -50,6 +50,8 @@ AMIS **병리결과입력** 화면에서 검사번호를 하나씩 조회하고 
 3. `run.pyw` 더블클릭
 
 Python 이 없는 PC에서 쓰려면 `build.bat` 을 실행해 `dist\AMIS_QR_Saver.exe` 를 만들어 복사하면 됩니다.
+`amis_qr_saver.py` 하나만 있는 폴더에서도 동작하며, exe 파일·프로그램 창 좌측 상단·작업표시줄 아이콘은 모두 `icon_white.ico` 입니다
+(dist 폴더에 `icon_white.ico`, `검사코드.xlsx` 도 함께 복사됩니다).
 
 > AMIS 를 **관리자 권한**으로 실행하고 있다면 이 프로그램도 관리자 권한으로 실행해야 키 입력이 전달됩니다.
 
