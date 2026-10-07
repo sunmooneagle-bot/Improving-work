@@ -10,7 +10,7 @@ import types
 _SOURCES = {}
 
 _SOURCES['__init__'] = r'''"""결과입력 자동 프로그램 - AMIS 병리결과 QR 일괄저장 도우미."""
-__version__ = "2.3.1"
+__version__ = "2.4.0"
 '''
 
 _SOURCES['config'] = r'''"""설정 및 파일 경로."""
@@ -76,6 +76,17 @@ DEFAULTS = {
     "action_button_name": "Action",                # F9 후 팝업이 뜰 때까지 기다리는 최대 시간(초)
     # 목록 체크 컬럼 순서 (쉼표 구분, 여기 없는 컬럼은 뒤에)
     "check_order": "Urine <30ml,Cell block 부적합,Vaginal,UC absent,Inst 10~20,Inst <10",
+    # 검사코드표 엑셀 (프로그램 폴더 기준, A열 처방코드 / B열 처방영문명). 없으면 내장 표 사용
+    "exam_code_file": "검사코드.xlsx",
+    "limit_checks_by_exam": True,      # QR 검사코드의 검체 종류에 맞는 체크 칸만 활성화
+    # 검체 분류: "분류=검사명에 들어 있는 글자(쉼표 구분)" 을 | 로 구분 (대소문자 무시)
+    "exam_categories": ("urine=urine,bladder irrigation|"
+                        "inst=catheter urine,washed urine,bladder irrigation|"
+                        "gyn=cervical,vaginal,endometrial|"
+                        "cellblock=cell block"),
+    # 체크 칸별로 활성화할 검체 분류: "컬럼제목=분류" 를 | 로 구분 (여기 없는 칸은 항상 활성)
+    "check_categories": ("Urine <30ml=urine|UC absent=urine|Inst 10~20=inst|Inst <10=inst|"
+                         "Vaginal=gyn|Cell block 부적합=cellblock"),
     "always_on_top": True,             # 프로그램 창(큰 화면)을 항상 위에 표시
     "mini_compact": False,             # 축소창을 작업화면 미리보기 없이 작게             # 팝업(확인/알림창)이 뜨면 닫지 않고 그대로 두고 작업 전체를 중지
     "fail_keywords": "실패,오류,에러,error,없습니다,존재하지,권한,잘못",
@@ -210,11 +221,11 @@ def hangul_to_qwerty(text):
     return "".join(out)
 
 
-_AMIS_RE = re.compile(r"^(\d{2})-([A-Za-z]{1,2})\s*-\s*(\d{3,})$")
+_AMIS_RE = re.compile(r"^(\d{2})\s*-?\s*([A-Za-z]{1,2})\s*-?\s*(\d{3,})$")
 
 
 def amis_format(code):
-    """검사번호를 AMIS 화면 표기로 통일: '26-S-082711' / '26-S  - 082711' → '26-S -082711'.
+    """검사번호를 AMIS 화면 표기로 통일: '26-S-082711' / '26-S  - 082711' / '26S 082711' → '26-S -082711'.
     형식이 다르면 그대로 둔다."""
     m = _AMIS_RE.match((code or "").strip())
     if not m:
@@ -235,7 +246,7 @@ def normalize_code(raw, fix_hangul=True, uppercase=True, amis_space=True):
     return code
 
 
-_PATTERN = re.compile(r"^\d{2}-[A-Z]{1,2}\s*-\s*\d{3,}$")
+_PATTERN = re.compile(r"^\d{2}\s*-?\s*[A-Z]{1,2}\s*-?\s*\d{3,}$")
 
 
 def looks_like_accession(code):
@@ -253,9 +264,11 @@ WAIT, RUN, DONE, FAIL = "대기중", "진행중", "저장완료", "저장실패"
 
 
 class Item:
-    __slots__ = ("id", "code", "status", "time", "note", "tries", "added", "raw", "checks")
+    __slots__ = ("id", "code", "status", "time", "note", "tries", "added", "raw", "checks",
+                 "exam_code", "exam_name")
 
-    def __init__(self, id, code, status=WAIT, time="", note="", tries=0, added="", raw="", checks=None):
+    def __init__(self, id, code, status=WAIT, time="", note="", tries=0, added="", raw="", checks=None,
+                 exam_code="", exam_name=""):
         self.id = id
         self.code = code
         self.status = status
@@ -265,6 +278,8 @@ class Item:
         self.added = added
         self.raw = raw        # QR 스캐너가 실제로 친 원문 (예: '26-C -053447') - 저장 시 그대로 다시 입력
         self.checks = dict(checks) if isinstance(checks, dict) else {}   # 목록 체크박스 {컬럼제목: True/False}
+        self.exam_code = exam_code or ""   # QR 의 검사코드 (예: 'FB0164')
+        self.exam_name = exam_name or ""   # 검사코드표의 검사명 (예: 'Voided urine (Des)[Liquid based cytology]')
 
     def to_dict(self):
         return {k: getattr(self, k) for k in self.__slots__}
@@ -305,12 +320,13 @@ class Store:
             pass
 
     # ------------------------------------------------------------ 조작
-    def add(self, code, raw=""):
-        """추가된 Item 반환, 이미 목록에 있으면 None. raw = QR 원문."""
+    def add(self, code, raw="", exam_code="", exam_name=""):
+        """추가된 Item 반환, 이미 목록에 있으면 None. raw = QR 원문(검사번호 부분)."""
         with self.lock:
             if any(i.code == code for i in self.items):
                 return None
-            item = Item(self._next_id, code, added=time.strftime("%H:%M:%S"), raw=raw)
+            item = Item(self._next_id, code, added=time.strftime("%H:%M:%S"), raw=raw,
+                        exam_code=exam_code, exam_name=exam_name)
             self._next_id += 1
             self.items.append(item)
         self.save()
@@ -398,6 +414,289 @@ class Store:
     def snapshot(self):
         with self.lock:
             return list(self.items)
+'''
+
+_SOURCES['exam'] = r'''"""검사의뢰서 QR 의 검사코드(처방코드) → 검사명, 검체 종류별로 목록 체크 칸 활성화.
+
+새 QR 형식: '26C 054730;A;1;;FB0164;1'
+  - 첫 칸 '26C 054730' = 검사번호 (기존과 같이 AMIS 조회에 사용)
+  - 'A;1;' 등 나머지는 무시, 'FB0164' 처럼 영문 2자 + 숫자로 된 칸 = 검사코드
+검사코드표는 프로그램 폴더의 '검사코드.xlsx' (A열 처방코드, B열 처방영문명) 가 있으면 그것을,
+없으면 아래 내장 표를 사용한다.
+"""
+import os
+import re
+import xml.etree.ElementTree as ET
+import zipfile
+
+_CODE_RE = re.compile(r"^[A-Z]{2}\d{3,}$")
+
+
+def parse_qr(text):
+    """QR 문자열(한글 보정·대문자 처리 후) → (검사번호 부분, 검사코드 또는 '').
+    ';' 가 없으면 예전 QR(검사번호만)로 보고 그대로 돌려준다."""
+    text = (text or "").strip()
+    if ";" not in text:
+        return text, ""
+    parts = [p.strip() for p in text.split(";")]
+    code = next((p.upper() for p in parts[1:] if _CODE_RE.match(p.upper())), "")
+    return parts[0], code
+
+
+# 내장 검사코드표 (검사코드.xlsx 기준)
+BUILTIN = {
+    'FB0001': 'Adrenal gland (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0002': 'Adrenal gland (EUS guided FNA)(Des)[Smear]',
+    'FB0005': 'Ampulla of vater (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0006': 'Ampulla of vater (EUS guided FNA)(Des)[Smear]',
+    'FB0008': 'Ascitic fluid (Des)[Liquid based cytology]',
+    'FB0010': 'Specimen labeled (EBUS guided TBNA)(Des)[Smear with cell block]',
+    'FB0011': 'Specimen labeled (EBUS guided TBNA)(Des)[Smear]',
+    'FB0012': 'Specimen labeled (CT guided PCNA)(Des)[Smear with cell block]',
+    'FB0013': 'Specimen labeled (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0014': 'Specimen labeled (Fluoroscopy guided PCNA)(Des)[Smear with cell block]',
+    'FB0015': 'Specimen labeled (US guided PCNA)(Des)[Smear with cell block]',
+    'FB0016': 'Specimen labeled (CT guided PCNA)(Des)[Smear]',
+    'FB0017': 'Specimen labeled (EUS guided FNA)(Des)[Smear]',
+    'FB0018': 'Specimen labeled (Fluoroscopy guided PCNA)(Des)[Smear]',
+    'FB0019': 'Specimen labeled (US guided PCNA)(Des)[Smear]',
+    'FB0021': 'Bronchoalveolar lavage (Des)[Liquid based cytology]',
+    'FB0022': 'Bile duct (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0023': 'Bile duct (EUS guided FNA)(Des)[Smear]',
+    'FB0025': 'Bile (Des)[Liquid based cytology]',
+    'FB0030': 'Specimen labeled (Des)[Liquid based cytology]',
+    'FB0032': 'Bone (CT guided PCNA)(Des)[Smear with cell block]',
+    'FB0033': 'Bone (US guided PCNA)(Des)[Smear with cell block]',
+    'FB0034': 'Bone (CT guided PCNA)(Des)[Smear]',
+    'FB0035': 'Bone (US guided PCNA)(Des)[Smear]',
+    'FB0038': 'Breast,Left (US guided PCNA)(Des)[Smear with cell block]',
+    'FB0039': 'Breast,Left (US guided PCNA)(Des)[Smear]',
+    'FB0042': 'Breast,Right (US guided PCNA)(Des)[Smear with cell block]',
+    'FB0043': 'Breast,Right (US guided PCNA)(Des)[Smear]',
+    'FB0045': 'Bronchial brushing (Des)[Liquid based cytology]',
+    'FB0047': 'Bronchial washing (Des)[Liquid based cytology]',
+    'FB0049': 'Catheter urine (Des)[Liquid based cytology]',
+    'FB0050': 'Cervical scrape (Des)[Liquid based cytology]',
+    'FB0055': 'Cerebrospinal fluid (Des)[Liquid based cytology]',
+    'FB0056': 'Endometrial (Des)[Liquid based cytology]',
+    'FB0058': 'Esophagus (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0059': 'Esophagus (EUS guided FNA)(Des)[Smear]',
+    'FB0060': 'Gallbladder (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0061': 'Gallbladder (EUS guided FNA)(Des)[Smear]',
+    'FB0064': 'Large intestine (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0065': 'Large intestine (EUS guided FNA)(Des)[Smear]',
+    'FB0066': 'Liver (Fluoroscopy guided PCNA)(Des)[Smear with cell block]',
+    'FB0067': 'Liver (US guided PCNA)(Des)[Smear with cell block]',
+    'FB0068': 'Liver (Fluoroscopy guided PCNA)(Des)[Smear]',
+    'FB0069': 'Liver (US guided PCNA)(Des)[Smear]',
+    'FB0070': 'Lung,Left (CT guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0071': 'Lung,Left (EBUS guided TBNA)(Des)[Liquid based cytology with cell block]',
+    'FB0072': 'Lung,Left (Fluoroscopy guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0073': 'Lung,Left (CT guided PCNA)(Des)[Liquid based cytology]',
+    'FB0074': 'Lung,Left (EBUS guided TBNA)(Des)[Liquid based cytology]',
+    'FB0075': 'Lung,Left (Fluoroscopy guided PCNA)(Des)[Liquid based cytology]',
+    'FB0076': 'Lung,Left (CT guided PCNA)(Des)[Smear with cell block]',
+    'FB0078': 'Lung,Left (Fluoroscopy guided PCNA)(Des)[Smear with cell block]',
+    'FB0079': 'Lung,Left (CT guided PCNA)(Des)[Smear]',
+    'FB0081': 'Lung,Left (Fluoroscopy guided PCNA)(Des)[Smear]',
+    'FB0082': 'Lung,Right (CT guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0083': 'Lung,Right (EBUS guided TBNA)(Des)[Liquid based cytology with cell block]',
+    'FB0084': 'Lung,Right (Fluoroscopy guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0085': 'Lung,Right (CT guided PCNA)(Des)[Liquid based cytology]',
+    'FB0086': 'Lung,Right (EBUS guided TBNA)(Des)[Liquid based cytology]',
+    'FB0087': 'Lung,Right (Fluoroscopy guided PCNA)(Des)[Liquid based cytology]',
+    'FB0088': 'Lung,Right (CT guided PCNA)(Des)[Smear with cell block]',
+    'FB0089': 'Lung,Right (EBUS guided TBNA)(Des)[Smear with cell block]',
+    'FB0090': 'Lung,Right (Fluoroscopy guided PCNA)(Des)[Smear with cell block]',
+    'FB0091': 'Lung,Right (CT guided PCNA)(Des)[Smear]',
+    'FB0092': 'Lung,Right (EBUS guided TBNA)(Des)[Smear]',
+    'FB0093': 'Lung,Right (Fluoroscopy guided PCNA)(Des)[Smear]',
+    'FB0100': 'Mediastinum (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0101': 'Mediastinum (EBUS guided TBNA)(Des)[Smear]',
+    'FB0102': 'Mediastinum (EUS guided FNA)(Des)[Smear]',
+    'FB0103': 'Mediastinum (EBUS guided TBNA)(Des)[Smear with cell block]',
+    'FB0106': 'Pancreas (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0107': 'Pancreas (EUS guided FNA)(Des)[Smear]',
+    'FB0112': 'Parathyroid (US guided PCNA)(Des)[Smear with cell block]',
+    'FB0113': 'Parathyroid (US guided PCNA)(Des)[Smear]',
+    'FB0117': 'Pericardial fluid (Des)[Liquid based cytology]',
+    'FB0120': 'Peritoneal washing (Des)[Liquid based cytology]',
+    'FB0122': 'Peritoneum (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0123': 'Peritoneum (EUS guided FNA)(Des)[Smear]',
+    'FB0125': 'Pleural fluid (Des)[Liquid based cytology]',
+    'FB0127': 'Salivary gland,Left (US guided PCNA)(Des)[Smear with cell block]',
+    'FB0128': 'Salivary gland,Left (US guided PCNA)(Des)[Smear]',
+    'FB0129': 'Salivary gland,Right (US guided PCNA)(Des)[Smear with cell block]',
+    'FB0130': 'Salivary gland,Right (US guided PCNA)(Des)[Smear]',
+    'FB0131': 'Soft tissue (CT guided PCNA)(Des)[Smear with cell block]',
+    'FB0132': 'Soft tissue (EBUS guided TBNA)(Des)[Smear with cell block]',
+    'FB0133': 'Soft tissue (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0134': 'Soft tissue (US guided PCNA)(Des)[Smear with cell block]',
+    'FB0135': 'Soft tissue (CT guided PCNA)(Des)[Smear]',
+    'FB0136': 'Soft tissue (EBUS guided TBNA)(Des)[Smear]',
+    'FB0137': 'Soft tissue (EUS guided FNA)(Des)[Smear]',
+    'FB0138': 'Soft tissue (US guided PCNA)(Des)[Smear]',
+    'FB0139': 'Spleen (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0140': 'Spleen (EUS guided FNA)(Des)[Smear]',
+    'FB0142': 'Sputum (Des)[Liquid based cytology]',
+    'FB0143': 'Stomach (EUS guided FNA)(Des)[Smear with cell block]',
+    'FB0144': 'Stomach (EUS guided FNA)(Des)[Smear]',
+    'FB0145': 'TBNA washing (Des)[Liquid based cytology]',
+    'FB0159': 'Urethra & Pelvic washing (Des)[Liquid based cytology]',
+    'FB0161': 'Vaginal scrape (Des)[Liquid based cytology]',
+    'FB0164': 'Voided urine (Des)[Liquid based cytology]',
+    'FB0166': 'Washed urine (Des)[Liquid based cytology]',
+    'FB0167': 'Breast,Right (US guided PCNA)(Des)[Liquid based cytology]',
+    'FB0168': 'Breast,Left (US guided PCNA)(Des)[Liquid based cytology]',
+    'FB0169': 'Pancreas (EUS guided FNA)(Des)[Liquid based cytology]',
+    'FB0174': 'Ascitic fluid (Des)[Liquid based cytology with cell block]',
+    'FB0175': 'Pleural fluid (Des)[Liquid based cytology with cell block]',
+    'FB0176': 'Specimen labeled (Des)[Liquid based cytology with cell block]',
+    'FB0177': 'Specimen labeled (US guided PCNA)(Des)[Liquid based cytology]',
+    'FB0178': 'Parathyroid (US guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0180': 'Specimen labeled (EBUS guided TBNA)[Liquid based cytology]',
+    'FB0181': 'Specimen labeled (EBUS guided TBNA)[Liquid based cytology with cell block]',
+    'FB0182': 'Specimen labeled (CT guided PCNA)(Des)[Liquid based cytology]',
+    'FB0183': 'Specimen labeled (CT guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0184': 'Specimen labeled (Fluoroscopy guided PCNA)(Des)[Liquid based cytology]',
+    'FB0185': 'Specimen labeled (Fluoroscopy guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0186': 'Parathyroid (US guided PCNA)(Des)[Liquid based cytology]',
+    'FB0187': 'Lymph node (US guided PCNA)(Des)[Liquid based cytology]',
+    'FB0188': 'Lymph node (EUS guided FNA)(Des)[Liquid based cytology]',
+    'FB0189': 'Lymph node (EBUS guided TBNA)(Des)[Liquid based cytology]',
+    'FB0190': 'Thyroid (US guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0191': 'Thyroid (US guided PCNA)(Des)[Liquid based cytology]',
+    'FB0192': 'Thyroid (US guided PCNA)(Des)[Smear with cell block]',
+    'FB0193': 'Thyroid (US guided PCNA)(Des)[Smear]',
+    'FB0195': 'Bladder irrigation (Des)[Liquid based cytology]',
+    'FB0196': 'Breast,Left (US guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0197': 'Breast,Right (US guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0198': 'Lymph node (US guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0199': 'Lymph node (EUS guided FNA)(Des)[Liquid based cytology with cell block]',
+    'FB0200': 'Lymph node (EBUS guided TBNA)(Des)[Liquid based cytology with cell block]',
+    'FB0201': 'Pancreas (EUS guided FNA)(Des)[Liquid based cytology with cell block]',
+    'FB0202': 'Specimen labeled (US guided PCNA)(Des)[Liquid based cytology with cell block]',
+    'FB0203': 'Specimen labeled (EUS guided FNA)(Des)[Liquid based cytology with cell block]',
+    'FB0204': 'Specimen labeled (EUS guided FNA)(Des)[Liquid based cytology]',
+    'FB0205': 'Eye (Aspiration)(Des)[Liquid based cytology]',
+    'FB0206': 'Eye (Aspiration)(Des)[Liquid based cytology with cell block]',
+    'FB0207': 'Ampulla of vater (Des)[Liquid based cytology]',
+    'FB0208': 'Ampulla of vater (Des)[Liquid based cytology with cell block]',
+    'FB0209': 'Bile (Des)[Liquid based cytology with cell block]',
+    'FB0210': 'Bile duct (Des)[Liquid based cytology]',
+    'FB0211': 'Bile duct (Des)[Liquid based cytology with cell block]',
+    'FB0212': 'Intraoperative washing fluid (Des)[Liquid based cytology]',
+    'FB0213': 'Intraoperative washing fluid (Des)[Liquid based cytology with cell block]',
+    'FB0214': 'Pancreas (Des)[Liquid based cytology]',
+    'FB0215': 'Pancreas (Des)[Liquid based cytology with cell block]',
+    'FB0216': 'Peritoneal washing (Des)[Liquid based cytology with cell block]',
+    'FB0217': 'Pericardial fluid (Des)[Liquid based cytology with cell block]',
+}
+
+_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+
+
+def _col(ref):
+    return "".join(ch for ch in ref if ch.isalpha())
+
+
+def read_xlsx(path):
+    """엑셀 첫 시트의 A열(코드)·B열(이름)을 {코드: 이름} 으로 읽는다 (openpyxl 없이 표준 라이브러리만)."""
+    out = {}
+    with zipfile.ZipFile(path) as z:
+        shared = []
+        if "xl/sharedStrings.xml" in z.namelist():
+            for si in ET.fromstring(z.read("xl/sharedStrings.xml")).iter(_NS + "si"):
+                shared.append("".join(t.text or "" for t in si.iter(_NS + "t")))
+        sheets = sorted(n for n in z.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml$", n))
+        if not sheets:
+            return out
+        root = ET.fromstring(z.read(sheets[0]))
+        for row in root.iter(_NS + "row"):
+            vals = {}
+            for c in row.iter(_NS + "c"):
+                t = c.get("t")
+                if t == "inlineStr":
+                    v = "".join(x.text or "" for x in c.iter(_NS + "t"))
+                else:
+                    ve = c.find(_NS + "v")
+                    v = ve.text if ve is not None else ""
+                    if t == "s" and v:
+                        v = shared[int(v)]
+                vals[_col(c.get("r", ""))] = (v or "").strip()
+            code, name = vals.get("A", "").upper(), vals.get("B", "")
+            if _CODE_RE.match(code) and name and code not in out:
+                out[code] = name
+    return out
+
+
+class ExamTable:
+    def __init__(self):
+        self.codes = dict(BUILTIN)
+        self.source = "내장 검사코드표"
+
+    def load(self, path):
+        """엑셀 파일이 있으면 내장 표에 덮어쓴다. 읽은 건수 반환 (실패/없음 0)."""
+        if not path or not os.path.isfile(path):
+            return 0
+        try:
+            data = read_xlsx(path)
+        except (OSError, KeyError, ValueError, zipfile.BadZipFile, ET.ParseError):
+            return 0
+        if data:
+            self.codes = dict(BUILTIN)
+            self.codes.update(data)
+            self.source = os.path.basename(path)
+        return len(data)
+
+    def name(self, code):
+        return self.codes.get((code or "").upper(), "")
+
+
+def parse_categories(text):
+    """'urine=urine,bladder|gyn=cervical' → {'urine': ['urine', 'bladder'], 'gyn': ['cervical']}"""
+    out = {}
+    for part in str(text or "").split("|"):
+        if "=" in part:
+            cat, words = part.split("=", 1)
+            words = [w.strip().lower() for w in words.split(",") if w.strip()]
+            if cat.strip() and words:
+                out[cat.strip().lower()] = words
+    return out
+
+
+def parse_check_categories(text):
+    """'Urine <30ml=urine|Vaginal=gyn' → {'Urine <30ml': 'urine', 'Vaginal': 'gyn'}"""
+    out = {}
+    for part in str(text or "").split("|"):
+        if "=" in part:
+            hdr, cat = part.split("=", 1)
+            if hdr.strip() and cat.strip():
+                out[hdr.strip()] = cat.strip().lower()
+    return out
+
+
+def categories_of(exam_name, cfg):
+    """검사명에 해당하는 검체 분류 집합 (예: {'urine', 'inst'})."""
+    name = " ".join((exam_name or "").lower().split())
+    return {cat for cat, words in parse_categories(cfg.get("exam_categories")).items()
+            if any(w in name for w in words)}
+
+
+def check_enabled(item, header, cfg):
+    """목록 체크 칸(header)을 이 항목에서 쓸 수 있는지.
+    검사코드가 없거나 표에 없는 코드(검사명 모름)면 예전처럼 모두 사용 가능."""
+    if not cfg.get("limit_checks_by_exam", True) or not getattr(item, "exam_name", ""):
+        return True
+    cat = parse_check_categories(cfg.get("check_categories")).get(header)
+    if not cat:
+        return True
+    return cat in categories_of(item.exam_name, cfg)
+
+
+def effective_checks(item, cfg):
+    """저장 시 실제로 적용할 체크 (비활성 칸은 체크돼 있어도 무시)."""
+    return {k: v for k, v in item.checks.items() if v and check_enabled(item, k, cfg)}
 '''
 
 _SOURCES['win32'] = r'''"""Win32 API 래퍼 (ctypes 사용, 외부 의존성 없음).
@@ -1710,6 +2009,7 @@ import re
 import threading
 import time
 
+from . import exam
 from . import uia
 from . import win32 as w
 from .hangul import amis_format
@@ -2124,7 +2424,7 @@ class Worker(threading.Thread):
             if cfg.get("check_default", True):
                 self.check_default_selected(screen or uia.control_from_handle(hwnd))
             self.apply_extra_checks(screen or uia.control_from_handle(hwnd), item)
-            if item.checks.get(cfg.get("vaginal_col", "Vaginal")):
+            if exam.effective_checks(item, cfg).get(cfg.get("vaginal_col", "Vaginal")):
                 activated = self.apply_vaginal(screen or uia.control_from_handle(hwnd), hwnd) or activated
             activated = self.apply_radio_actions(screen or uia.control_from_handle(hwnd), item, hwnd) or activated
 
@@ -2198,7 +2498,8 @@ class Worker(threading.Thread):
         사람처럼 해당 라디오를 실제 클릭(같은 묶음의 기존 선택은 AMIS 가 자동 해제) → 선택됐는지 확인.
         찾지 못하거나 선택되지 않으면 저장하지 않음. AMIS 를 앞으로 가져왔으면 True."""
         from .config import parse_radio_actions
-        todo = [(h, p) for h, p, _ in parse_radio_actions(self.cfg.get("radio_actions")) if item.checks.get(h)]
+        checks = exam.effective_checks(item, self.cfg)    # 검체 종류에 맞지 않는 칸은 무시
+        todo = [(h, p) for h, p, _ in parse_radio_actions(self.cfg.get("radio_actions")) if checks.get(h)]
         if not todo:
             return False
         activated = False
@@ -2278,8 +2579,11 @@ class Worker(threading.Thread):
     def apply_extra_checks(self, root, item):
         """목록에서 지정한 체크박스 상태를 AMIS 화면에 똑같이 맞춘다. 맞추지 못하면 저장하지 않음."""
         from .config import parse_extra_checks
+        checks = exam.effective_checks(item, self.cfg)
         for hdr, prefix in parse_extra_checks(self.cfg.get("extra_checks")):
-            want = bool(item.checks.get(hdr, False))
+            if not exam.check_enabled(item, hdr, self.cfg):
+                continue                                   # 해당 검체가 아니면 AMIS 체크박스를 건드리지 않음
+            want = bool(checks.get(hdr, False))
             ctrl = uia.find_checkbox(root, prefix)
             if ctrl is None:
                 if want:
@@ -2718,6 +3022,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from . import __version__
+from . import exam
 from . import uia
 from . import win32 as w
 
@@ -2864,6 +3169,8 @@ class App:
         self.cfg = load_config()
         self.store = Store(data_path("qr_list.json"))
         self.del_store = Store(data_path("delete_list.json"))
+        self.exams = exam.ExamTable()
+        self.load_exam_codes(log=False)
         self.del_worker = None
         self.events = queue.Queue()
         self.worker = None
@@ -3162,15 +3469,16 @@ class App:
         order = [x.strip() for x in str(self.cfg.get("check_order", "")).split(",") if x.strip()]
         self.check_cols.sort(key=lambda h: order.index(h) if h in order else len(order))
         legend = tk.Label(f, bg=C["panel"], fg=C["muted"], font=F, anchor="w", justify="left",
-                          text="체크 칸: Urine <30ml · UC absent · Inst 10~20 · Inst <10 = URINE  ·  "
-                               "Cell block 부적합 = NGYN  ·  Vaginal = GYN  (Inst 두 칸은 하나만, 체크 안 하면 기본값 저장)")
+                          text="체크 칸: Urine <30ml · UC absent = Urine 검체  ·  Inst 10~20 · Inst <10 = Instrumented urine  ·  "
+                               "Cell block 부적합 = cell block 검체  ·  Vaginal = GYN  (－ = 해당 검체 아님, "
+                               "Inst 두 칸은 하나만, 체크 안 하면 기본값 저장)")
         legend.pack(fill="x", padx=6, pady=(0, 2))
         ck_ids = ["ck%d" % i for i in range(len(self.check_cols))]
-        cols = ("no", "code", *ck_ids, "status", "time", "note")
+        cols = ("no", "code", "exam", *ck_ids, "status", "time", "note")
         tf = tk.Frame(f, bg=C["panel"])
         tf.pack(fill="both", expand=True, padx=4, pady=(0, 4))
         self.tree = ttk.Treeview(tf, columns=cols, show="headings", selectmode="extended")
-        col_specs = [("no", "No", 44, "center"), ("code", "검사번호", 150, "center")]
+        col_specs = [("no", "No", 44, "center"), ("code", "검사번호", 150, "center"), ("exam", "검사명", 260, "w")]
         col_specs += [(cid, hdr, max(90, 12 * len(hdr)), "center") for cid, hdr in zip(ck_ids, self.check_cols)]
         col_specs += [("status", "상태", 100, "center"), ("time", "처리시각", 80, "center"), ("note", "비고", 240, "w")]
         sc = max(1.0, self.root.winfo_fpixels("1i") / 96.0)      # 화면 배율(125/150%) 반영
@@ -3282,6 +3590,20 @@ class App:
             "제목=AMIS 체크박스 이름 앞부분, 여러 개는 | 로 구분 (재시작 후 반영)")
         row(inner, 9, "목록 라디오 변경 컬럼", entry(inner, "radio_actions", 60),
             "제목=클릭할 라디오 이름 앞부분@묶음, | 로 구분 (재시작 후 반영)")
+
+        # 검사코드 / 검체 분류
+        inner = section("검사코드 · 검체별 체크 칸 (QR: 검사번호;...;검사코드;...)")
+        ef = tk.Frame(inner, bg=C["panel"])
+        entry(ef, "exam_code_file", 36).pack(side="left")
+        _btn(ef, "다시 불러오기", self.reload_exam_codes).pack(side="left", padx=4)
+        row(inner, 0, "검사코드표 엑셀", ef, "프로그램 폴더 기준, A열 처방코드 · B열 처방영문명")
+        self.exam_src_lbl = tk.Label(inner, bg=C["panel"], fg=C["muted"], font=F, anchor="w",
+                                     text="사용 중: %s (%d건)" % (self.exams.source, len(self.exams.codes)))
+        self.exam_src_lbl.grid(row=1, column=1, columnspan=2, sticky="w")
+        row(inner, 2, "", check(inner, "limit_checks_by_exam", "검체 종류에 맞는 체크 칸만 활성화"))
+        row(inner, 3, "검체 분류", entry(inner, "exam_categories", 60),
+            "분류=검사명에 들어 있는 글자(쉼표), | 로 구분")
+        row(inner, 4, "체크 칸별 분류", entry(inner, "check_categories", 60), "컬럼제목=분류, | 로 구분")
 
         # 1. 좌표 방식 (보조)
         inner = section("좌표 방식 (UI 자동화가 안 될 때 보조)")
@@ -3422,12 +3744,10 @@ class App:
     def on_del_qr_enter(self, _event):
         raw = self.del_qr_var.get()
         self.del_qr_var.set("")
-        code = normalize_code(raw, self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True),
-                              self.cfg.get("amis_space", True))
+        code, raw_qr, exam_code = self.split_qr(raw)
         if not code:
             return "break"
-        raw_qr = normalize_code(raw, self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True), False)
-        item = self.del_store.add(code, raw_qr)
+        item = self.del_store.add(code, raw_qr, exam_code, self.exams.name(exam_code))
         if item is None:
             self.root.bell()
             self.del_msg.config(text="이미 목록에 있는 검사번호입니다: %s" % code, fg=C["red"])
@@ -3541,12 +3861,11 @@ class App:
             return "break"
         raw = self.qr_var.get()
         self.qr_var.set("")
-        code = normalize_code(raw, self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True),
-                              self.cfg.get("amis_space", True))
+        code, raw_qr, exam_code = self.split_qr(raw)
         if not code:
             return "break"
-        raw_qr = normalize_code(raw, self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True), False)
-        item = self.store.add(code, raw_qr)
+        exam_name = self.exams.name(exam_code)
+        item = self.store.add(code, raw_qr, exam_code, exam_name)
         if item is None:
             self.root.bell()
             self.flash_msg("이미 목록에 있는 검사번호입니다: %s" % code, C["red"])
@@ -3554,10 +3873,45 @@ class App:
             self.insert_row(item)
             self.tree.see(str(item.id))
             warn = "" if looks_like_accession(code) else "  (검사번호 형식 확인 필요)"
-            self.flash_msg("추가됨: %s%s" % (code, warn), "#2e7d32" if not warn else "#a66b00")
-            self.log("QR 태그: %s%s" % (code, warn))
+            if exam_code and not exam_name:
+                warn += "  (검사코드 %s 가 검사코드표에 없음)" % exam_code
+            what = "%s  %s" % (code, exam_name or exam_code)
+            self.flash_msg("추가됨: %s%s" % (what, warn), "#2e7d32" if not warn else "#a66b00")
+            self.log("QR 태그: %s%s" % (what, warn))
             self.update_summary()
         return "break"
+
+    def split_qr(self, raw):
+        """QR 원문 → (목록용 검사번호, AMIS 에 다시 입력할 검사번호 원문, 검사코드).
+        '26C 054730;A;1;;FB0164;1' → ('26-C -054730', '26C 054730', 'FB0164')"""
+        fix, up = self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True)
+        text = normalize_code(raw, fix, up, False)
+        number, exam_code = exam.parse_qr(text)
+        code = normalize_code(number, False, False, self.cfg.get("amis_space", True))
+        return code, number, exam_code
+
+    def load_exam_codes(self, log=True):
+        """검사코드표 엑셀을 (다시) 읽고, 목록의 검사명을 갱신."""
+        path = str(self.cfg.get("exam_code_file") or "").strip()
+        if path and not os.path.isabs(path):
+            path = data_path(path)
+        self.exams = exam.ExamTable()
+        n = self.exams.load(path)
+        changed = False
+        for st in (self.store, self.del_store):
+            with st.lock:
+                for item in st.items:
+                    name = self.exams.name(item.exam_code)
+                    if item.exam_code and name and name != item.exam_name:
+                        item.exam_name, changed = name, True
+            if changed:
+                st.save()
+        if log:
+            self.log("검사코드표: %s (%d건)" % (self.exams.source if n else "엑셀 없음 → 내장 표",
+                                                len(self.exams.codes)))
+            if hasattr(self, "tree"):
+                self.reload_tree()
+        return n
 
     def flash_msg(self, text, color):
         self.qr_msg.config(text=text, fg=color)
@@ -3579,8 +3933,18 @@ class App:
                 pass
 
     def _row_values(self, idx, item):
-        marks = tuple("☑" if item.checks.get(h) else "☐" for h in self.check_cols)
-        return (idx, item.code, *marks, STATUS_STYLE[item.status][0], item.time or "", item.note or "")
+        marks = tuple(("☑" if item.checks.get(h) else "☐") if exam.check_enabled(item, h, self.cfg) else "－"
+                      for h in self.check_cols)
+        return (idx, item.code, self.exam_text(item), *marks, STATUS_STYLE[item.status][0],
+                item.time or "", item.note or "")
+
+    @staticmethod
+    def exam_text(item):
+        if item.exam_name:
+            return item.exam_name
+        if item.exam_code:
+            return "%s (검사코드표에 없음)" % item.exam_code
+        return ""
 
     # 체크 칸마다 색 (체크되면 그 칸이 해당 색으로 칠해져 어느 열인지 바로 보임)
     CHECK_COLORS = ["#cfe8ff", "#ffd9b3", "#ffd1e3", "#d4f2d0", "#e3d9ff", "#fff2a8", "#d9f0f0"]
@@ -3610,7 +3974,7 @@ class App:
             if item is None:
                 continue
             for idx, hdr in enumerate(self.check_cols):
-                if not item.checks.get(hdr):
+                if not item.checks.get(hdr) or not exam.check_enabled(item, hdr, self.cfg):
                     continue
                 box = self.tree.bbox(iid, "ck%d" % idx)
                 if not box:
@@ -3630,7 +3994,7 @@ class App:
         col = self.tree.identify_column(event.x)          # '#1', '#2' ...
         iid = self.tree.identify_row(event.y)
         try:
-            idx = int(col[1:]) - 3                          # No, 검사번호 다음부터 체크 컬럼
+            idx = int(col[1:]) - 4                          # No, 검사번호, 검사명 다음부터 체크 컬럼
         except ValueError:
             return None
         if not iid or not (0 <= idx < len(self.check_cols)):
@@ -3640,6 +4004,12 @@ class App:
 
     def toggle_cell(self, iid, idx):
         key = self.check_cols[idx]
+        item = self.store.get(int(iid))
+        if item is not None and not exam.check_enabled(item, key, self.cfg):
+            self.root.bell()
+            self.flash_msg("'%s' 는 이 검체(%s)에는 사용할 수 없습니다." % (key, item.exam_name or item.exam_code),
+                           C["red"])
+            return
         val = self.store.toggle_check(int(iid), key)
         if val and key in self.check_groups:       # 같은 묶음(Instrumented urine)은 하나만
             others = {k: False for k, g in self.check_groups.items() if g == self.check_groups[key] and k != key}
@@ -4375,12 +4745,13 @@ class App:
                 messagebox.showerror("오류", "숫자 설정값을 확인해 주세요.", parent=self.root)
             return False
         for key in ("window_keyword", "fail_keywords", "screen_code", "uia_field_id", "uia_screen_id",
-                    "default_name", "extra_checks", "radio_actions"):
+                    "default_name", "extra_checks", "radio_actions", "exam_code_file", "exam_categories",
+                    "check_categories"):
             if key in self.vars:
                 new[key] = self.vars[key].get().strip()
         new["key_send"] = {t: k for k, t in KEY_SENDS}.get(self.keysend_cb.get(), "auto")
         for key in ("press_enter", "check_loaded", "auto_close_dialogs", "restore_focus", "fix_hangul", "uppercase",
-                    "check_default"):
+                    "check_default", "limit_checks_by_exam"):
             new[key] = bool(self.vars[key].get())
         new["input_method"] = {t: k for k, t in INPUT_METHODS}.get(self.input_cb.get(), "uia")
         new["clear_method"] = {t: k for k, t in CLEAR_METHODS}.get(self.clear_cb.get(), "home_end")
@@ -4393,6 +4764,16 @@ class App:
         if self.apply_settings():
             self.status("설정이 저장되었습니다.")
             self.log("설정 저장")
+            self.reload_tree()          # 검체 분류 변경을 목록 체크 칸에 바로 반영
+
+    def reload_exam_codes(self):
+        if not self.apply_settings():
+            return
+        n = self.load_exam_codes()
+        self.exam_src_lbl.config(text="사용 중: %s (%d건)" % (self.exams.source, len(self.exams.codes)))
+        if not n:
+            messagebox.showinfo("검사코드표", "엑셀 파일을 찾지 못했거나 읽을 수 없어 내장 검사코드표를 사용합니다.",
+                                parent=self.root)
 
     def default_settings(self):
         if not messagebox.askyesno("기본값", "검사번호 칸 위치/ID 를 제외한 설정을 기본값으로 되돌릴까요?",
@@ -4685,7 +5066,7 @@ def _load():
     pkg = types.ModuleType("qrsaver")
     pkg.__path__ = []
     sys.modules["qrsaver"] = pkg
-    for name in ['__init__', 'config', 'hangul', 'models', 'win32', 'uia', 'worker', 'gui']:
+    for name in ['__init__', 'config', 'hangul', 'models', 'exam', 'win32', 'uia', 'worker', 'gui']:
         if name == "__init__":
             mod, full = pkg, "qrsaver"
         else:

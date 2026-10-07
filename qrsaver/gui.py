@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from . import __version__
+from . import exam
 from . import uia
 from . import win32 as w
 
@@ -153,6 +154,8 @@ class App:
         self.cfg = load_config()
         self.store = Store(data_path("qr_list.json"))
         self.del_store = Store(data_path("delete_list.json"))
+        self.exams = exam.ExamTable()
+        self.load_exam_codes(log=False)
         self.del_worker = None
         self.events = queue.Queue()
         self.worker = None
@@ -451,15 +454,16 @@ class App:
         order = [x.strip() for x in str(self.cfg.get("check_order", "")).split(",") if x.strip()]
         self.check_cols.sort(key=lambda h: order.index(h) if h in order else len(order))
         legend = tk.Label(f, bg=C["panel"], fg=C["muted"], font=F, anchor="w", justify="left",
-                          text="체크 칸: Urine <30ml · UC absent · Inst 10~20 · Inst <10 = URINE  ·  "
-                               "Cell block 부적합 = NGYN  ·  Vaginal = GYN  (Inst 두 칸은 하나만, 체크 안 하면 기본값 저장)")
+                          text="체크 칸: Urine <30ml · UC absent = Urine 검체  ·  Inst 10~20 · Inst <10 = Instrumented urine  ·  "
+                               "Cell block 부적합 = cell block 검체  ·  Vaginal = GYN  (－ = 해당 검체 아님, "
+                               "Inst 두 칸은 하나만, 체크 안 하면 기본값 저장)")
         legend.pack(fill="x", padx=6, pady=(0, 2))
         ck_ids = ["ck%d" % i for i in range(len(self.check_cols))]
-        cols = ("no", "code", *ck_ids, "status", "time", "note")
+        cols = ("no", "code", "exam", *ck_ids, "status", "time", "note")
         tf = tk.Frame(f, bg=C["panel"])
         tf.pack(fill="both", expand=True, padx=4, pady=(0, 4))
         self.tree = ttk.Treeview(tf, columns=cols, show="headings", selectmode="extended")
-        col_specs = [("no", "No", 44, "center"), ("code", "검사번호", 150, "center")]
+        col_specs = [("no", "No", 44, "center"), ("code", "검사번호", 150, "center"), ("exam", "검사명", 260, "w")]
         col_specs += [(cid, hdr, max(90, 12 * len(hdr)), "center") for cid, hdr in zip(ck_ids, self.check_cols)]
         col_specs += [("status", "상태", 100, "center"), ("time", "처리시각", 80, "center"), ("note", "비고", 240, "w")]
         sc = max(1.0, self.root.winfo_fpixels("1i") / 96.0)      # 화면 배율(125/150%) 반영
@@ -571,6 +575,20 @@ class App:
             "제목=AMIS 체크박스 이름 앞부분, 여러 개는 | 로 구분 (재시작 후 반영)")
         row(inner, 9, "목록 라디오 변경 컬럼", entry(inner, "radio_actions", 60),
             "제목=클릭할 라디오 이름 앞부분@묶음, | 로 구분 (재시작 후 반영)")
+
+        # 검사코드 / 검체 분류
+        inner = section("검사코드 · 검체별 체크 칸 (QR: 검사번호;...;검사코드;...)")
+        ef = tk.Frame(inner, bg=C["panel"])
+        entry(ef, "exam_code_file", 36).pack(side="left")
+        _btn(ef, "다시 불러오기", self.reload_exam_codes).pack(side="left", padx=4)
+        row(inner, 0, "검사코드표 엑셀", ef, "프로그램 폴더 기준, A열 처방코드 · B열 처방영문명")
+        self.exam_src_lbl = tk.Label(inner, bg=C["panel"], fg=C["muted"], font=F, anchor="w",
+                                     text="사용 중: %s (%d건)" % (self.exams.source, len(self.exams.codes)))
+        self.exam_src_lbl.grid(row=1, column=1, columnspan=2, sticky="w")
+        row(inner, 2, "", check(inner, "limit_checks_by_exam", "검체 종류에 맞는 체크 칸만 활성화"))
+        row(inner, 3, "검체 분류", entry(inner, "exam_categories", 60),
+            "분류=검사명에 들어 있는 글자(쉼표), | 로 구분")
+        row(inner, 4, "체크 칸별 분류", entry(inner, "check_categories", 60), "컬럼제목=분류, | 로 구분")
 
         # 1. 좌표 방식 (보조)
         inner = section("좌표 방식 (UI 자동화가 안 될 때 보조)")
@@ -711,12 +729,10 @@ class App:
     def on_del_qr_enter(self, _event):
         raw = self.del_qr_var.get()
         self.del_qr_var.set("")
-        code = normalize_code(raw, self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True),
-                              self.cfg.get("amis_space", True))
+        code, raw_qr, exam_code = self.split_qr(raw)
         if not code:
             return "break"
-        raw_qr = normalize_code(raw, self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True), False)
-        item = self.del_store.add(code, raw_qr)
+        item = self.del_store.add(code, raw_qr, exam_code, self.exams.name(exam_code))
         if item is None:
             self.root.bell()
             self.del_msg.config(text="이미 목록에 있는 검사번호입니다: %s" % code, fg=C["red"])
@@ -830,12 +846,11 @@ class App:
             return "break"
         raw = self.qr_var.get()
         self.qr_var.set("")
-        code = normalize_code(raw, self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True),
-                              self.cfg.get("amis_space", True))
+        code, raw_qr, exam_code = self.split_qr(raw)
         if not code:
             return "break"
-        raw_qr = normalize_code(raw, self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True), False)
-        item = self.store.add(code, raw_qr)
+        exam_name = self.exams.name(exam_code)
+        item = self.store.add(code, raw_qr, exam_code, exam_name)
         if item is None:
             self.root.bell()
             self.flash_msg("이미 목록에 있는 검사번호입니다: %s" % code, C["red"])
@@ -843,10 +858,45 @@ class App:
             self.insert_row(item)
             self.tree.see(str(item.id))
             warn = "" if looks_like_accession(code) else "  (검사번호 형식 확인 필요)"
-            self.flash_msg("추가됨: %s%s" % (code, warn), "#2e7d32" if not warn else "#a66b00")
-            self.log("QR 태그: %s%s" % (code, warn))
+            if exam_code and not exam_name:
+                warn += "  (검사코드 %s 가 검사코드표에 없음)" % exam_code
+            what = "%s  %s" % (code, exam_name or exam_code)
+            self.flash_msg("추가됨: %s%s" % (what, warn), "#2e7d32" if not warn else "#a66b00")
+            self.log("QR 태그: %s%s" % (what, warn))
             self.update_summary()
         return "break"
+
+    def split_qr(self, raw):
+        """QR 원문 → (목록용 검사번호, AMIS 에 다시 입력할 검사번호 원문, 검사코드).
+        '26C 054730;A;1;;FB0164;1' → ('26-C -054730', '26C 054730', 'FB0164')"""
+        fix, up = self.cfg.get("fix_hangul", True), self.cfg.get("uppercase", True)
+        text = normalize_code(raw, fix, up, False)
+        number, exam_code = exam.parse_qr(text)
+        code = normalize_code(number, False, False, self.cfg.get("amis_space", True))
+        return code, number, exam_code
+
+    def load_exam_codes(self, log=True):
+        """검사코드표 엑셀을 (다시) 읽고, 목록의 검사명을 갱신."""
+        path = str(self.cfg.get("exam_code_file") or "").strip()
+        if path and not os.path.isabs(path):
+            path = data_path(path)
+        self.exams = exam.ExamTable()
+        n = self.exams.load(path)
+        changed = False
+        for st in (self.store, self.del_store):
+            with st.lock:
+                for item in st.items:
+                    name = self.exams.name(item.exam_code)
+                    if item.exam_code and name and name != item.exam_name:
+                        item.exam_name, changed = name, True
+            if changed:
+                st.save()
+        if log:
+            self.log("검사코드표: %s (%d건)" % (self.exams.source if n else "엑셀 없음 → 내장 표",
+                                                len(self.exams.codes)))
+            if hasattr(self, "tree"):
+                self.reload_tree()
+        return n
 
     def flash_msg(self, text, color):
         self.qr_msg.config(text=text, fg=color)
@@ -868,8 +918,18 @@ class App:
                 pass
 
     def _row_values(self, idx, item):
-        marks = tuple("☑" if item.checks.get(h) else "☐" for h in self.check_cols)
-        return (idx, item.code, *marks, STATUS_STYLE[item.status][0], item.time or "", item.note or "")
+        marks = tuple(("☑" if item.checks.get(h) else "☐") if exam.check_enabled(item, h, self.cfg) else "－"
+                      for h in self.check_cols)
+        return (idx, item.code, self.exam_text(item), *marks, STATUS_STYLE[item.status][0],
+                item.time or "", item.note or "")
+
+    @staticmethod
+    def exam_text(item):
+        if item.exam_name:
+            return item.exam_name
+        if item.exam_code:
+            return "%s (검사코드표에 없음)" % item.exam_code
+        return ""
 
     # 체크 칸마다 색 (체크되면 그 칸이 해당 색으로 칠해져 어느 열인지 바로 보임)
     CHECK_COLORS = ["#cfe8ff", "#ffd9b3", "#ffd1e3", "#d4f2d0", "#e3d9ff", "#fff2a8", "#d9f0f0"]
@@ -899,7 +959,7 @@ class App:
             if item is None:
                 continue
             for idx, hdr in enumerate(self.check_cols):
-                if not item.checks.get(hdr):
+                if not item.checks.get(hdr) or not exam.check_enabled(item, hdr, self.cfg):
                     continue
                 box = self.tree.bbox(iid, "ck%d" % idx)
                 if not box:
@@ -919,7 +979,7 @@ class App:
         col = self.tree.identify_column(event.x)          # '#1', '#2' ...
         iid = self.tree.identify_row(event.y)
         try:
-            idx = int(col[1:]) - 3                          # No, 검사번호 다음부터 체크 컬럼
+            idx = int(col[1:]) - 4                          # No, 검사번호, 검사명 다음부터 체크 컬럼
         except ValueError:
             return None
         if not iid or not (0 <= idx < len(self.check_cols)):
@@ -929,6 +989,12 @@ class App:
 
     def toggle_cell(self, iid, idx):
         key = self.check_cols[idx]
+        item = self.store.get(int(iid))
+        if item is not None and not exam.check_enabled(item, key, self.cfg):
+            self.root.bell()
+            self.flash_msg("'%s' 는 이 검체(%s)에는 사용할 수 없습니다." % (key, item.exam_name or item.exam_code),
+                           C["red"])
+            return
         val = self.store.toggle_check(int(iid), key)
         if val and key in self.check_groups:       # 같은 묶음(Instrumented urine)은 하나만
             others = {k: False for k, g in self.check_groups.items() if g == self.check_groups[key] and k != key}
@@ -1664,12 +1730,13 @@ class App:
                 messagebox.showerror("오류", "숫자 설정값을 확인해 주세요.", parent=self.root)
             return False
         for key in ("window_keyword", "fail_keywords", "screen_code", "uia_field_id", "uia_screen_id",
-                    "default_name", "extra_checks", "radio_actions"):
+                    "default_name", "extra_checks", "radio_actions", "exam_code_file", "exam_categories",
+                    "check_categories"):
             if key in self.vars:
                 new[key] = self.vars[key].get().strip()
         new["key_send"] = {t: k for k, t in KEY_SENDS}.get(self.keysend_cb.get(), "auto")
         for key in ("press_enter", "check_loaded", "auto_close_dialogs", "restore_focus", "fix_hangul", "uppercase",
-                    "check_default"):
+                    "check_default", "limit_checks_by_exam"):
             new[key] = bool(self.vars[key].get())
         new["input_method"] = {t: k for k, t in INPUT_METHODS}.get(self.input_cb.get(), "uia")
         new["clear_method"] = {t: k for k, t in CLEAR_METHODS}.get(self.clear_cb.get(), "home_end")
@@ -1682,6 +1749,16 @@ class App:
         if self.apply_settings():
             self.status("설정이 저장되었습니다.")
             self.log("설정 저장")
+            self.reload_tree()          # 검체 분류 변경을 목록 체크 칸에 바로 반영
+
+    def reload_exam_codes(self):
+        if not self.apply_settings():
+            return
+        n = self.load_exam_codes()
+        self.exam_src_lbl.config(text="사용 중: %s (%d건)" % (self.exams.source, len(self.exams.codes)))
+        if not n:
+            messagebox.showinfo("검사코드표", "엑셀 파일을 찾지 못했거나 읽을 수 없어 내장 검사코드표를 사용합니다.",
+                                parent=self.root)
 
     def default_settings(self):
         if not messagebox.askyesno("기본값", "검사번호 칸 위치/ID 를 제외한 설정을 기본값으로 되돌릴까요?",

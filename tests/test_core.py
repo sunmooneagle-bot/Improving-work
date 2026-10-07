@@ -17,7 +17,7 @@ class HangulTest(unittest.TestCase):
 
     def test_plain(self):
         self.assertEqual(normalize_code("  26-c -053637 "), "26-C -053637")
-        self.assertEqual(normalize_code("26-c -053637", fix_hangul=False, uppercase=False), "26-c -053637")
+        self.assertEqual(normalize_code("26-c -053637", fix_hangul=False, uppercase=False, amis_space=False), "26-c -053637")
 
     def test_pattern(self):
         self.assertTrue(looks_like_accession("26-C -053637"))

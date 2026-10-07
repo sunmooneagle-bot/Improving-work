@@ -61,6 +61,17 @@ DEFAULTS = {
     "action_button_name": "Action",                # F9 후 팝업이 뜰 때까지 기다리는 최대 시간(초)
     # 목록 체크 컬럼 순서 (쉼표 구분, 여기 없는 컬럼은 뒤에)
     "check_order": "Urine <30ml,Cell block 부적합,Vaginal,UC absent,Inst 10~20,Inst <10",
+    # 검사코드표 엑셀 (프로그램 폴더 기준, A열 처방코드 / B열 처방영문명). 없으면 내장 표 사용
+    "exam_code_file": "검사코드.xlsx",
+    "limit_checks_by_exam": True,      # QR 검사코드의 검체 종류에 맞는 체크 칸만 활성화
+    # 검체 분류: "분류=검사명에 들어 있는 글자(쉼표 구분)" 을 | 로 구분 (대소문자 무시)
+    "exam_categories": ("urine=urine,bladder irrigation|"
+                        "inst=catheter urine,washed urine,bladder irrigation|"
+                        "gyn=cervical,vaginal,endometrial|"
+                        "cellblock=cell block"),
+    # 체크 칸별로 활성화할 검체 분류: "컬럼제목=분류" 를 | 로 구분 (여기 없는 칸은 항상 활성)
+    "check_categories": ("Urine <30ml=urine|UC absent=urine|Inst 10~20=inst|Inst <10=inst|"
+                         "Vaginal=gyn|Cell block 부적합=cellblock"),
     "always_on_top": True,             # 프로그램 창(큰 화면)을 항상 위에 표시
     "mini_compact": False,             # 축소창을 작업화면 미리보기 없이 작게             # 팝업(확인/알림창)이 뜨면 닫지 않고 그대로 두고 작업 전체를 중지
     "fail_keywords": "실패,오류,에러,error,없습니다,존재하지,권한,잘못",

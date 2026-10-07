@@ -10,6 +10,7 @@ import re
 import threading
 import time
 
+from . import exam
 from . import uia
 from . import win32 as w
 from .hangul import amis_format
@@ -424,7 +425,7 @@ class Worker(threading.Thread):
             if cfg.get("check_default", True):
                 self.check_default_selected(screen or uia.control_from_handle(hwnd))
             self.apply_extra_checks(screen or uia.control_from_handle(hwnd), item)
-            if item.checks.get(cfg.get("vaginal_col", "Vaginal")):
+            if exam.effective_checks(item, cfg).get(cfg.get("vaginal_col", "Vaginal")):
                 activated = self.apply_vaginal(screen or uia.control_from_handle(hwnd), hwnd) or activated
             activated = self.apply_radio_actions(screen or uia.control_from_handle(hwnd), item, hwnd) or activated
 
@@ -498,7 +499,8 @@ class Worker(threading.Thread):
         사람처럼 해당 라디오를 실제 클릭(같은 묶음의 기존 선택은 AMIS 가 자동 해제) → 선택됐는지 확인.
         찾지 못하거나 선택되지 않으면 저장하지 않음. AMIS 를 앞으로 가져왔으면 True."""
         from .config import parse_radio_actions
-        todo = [(h, p) for h, p, _ in parse_radio_actions(self.cfg.get("radio_actions")) if item.checks.get(h)]
+        checks = exam.effective_checks(item, self.cfg)    # 검체 종류에 맞지 않는 칸은 무시
+        todo = [(h, p) for h, p, _ in parse_radio_actions(self.cfg.get("radio_actions")) if checks.get(h)]
         if not todo:
             return False
         activated = False
@@ -578,8 +580,11 @@ class Worker(threading.Thread):
     def apply_extra_checks(self, root, item):
         """목록에서 지정한 체크박스 상태를 AMIS 화면에 똑같이 맞춘다. 맞추지 못하면 저장하지 않음."""
         from .config import parse_extra_checks
+        checks = exam.effective_checks(item, self.cfg)
         for hdr, prefix in parse_extra_checks(self.cfg.get("extra_checks")):
-            want = bool(item.checks.get(hdr, False))
+            if not exam.check_enabled(item, hdr, self.cfg):
+                continue                                   # 해당 검체가 아니면 AMIS 체크박스를 건드리지 않음
+            want = bool(checks.get(hdr, False))
             ctrl = uia.find_checkbox(root, prefix)
             if ctrl is None:
                 if want:

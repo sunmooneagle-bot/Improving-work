@@ -8,9 +8,11 @@ WAIT, RUN, DONE, FAIL = "대기중", "진행중", "저장완료", "저장실패"
 
 
 class Item:
-    __slots__ = ("id", "code", "status", "time", "note", "tries", "added", "raw", "checks")
+    __slots__ = ("id", "code", "status", "time", "note", "tries", "added", "raw", "checks",
+                 "exam_code", "exam_name")
 
-    def __init__(self, id, code, status=WAIT, time="", note="", tries=0, added="", raw="", checks=None):
+    def __init__(self, id, code, status=WAIT, time="", note="", tries=0, added="", raw="", checks=None,
+                 exam_code="", exam_name=""):
         self.id = id
         self.code = code
         self.status = status
@@ -20,6 +22,8 @@ class Item:
         self.added = added
         self.raw = raw        # QR 스캐너가 실제로 친 원문 (예: '26-C -053447') - 저장 시 그대로 다시 입력
         self.checks = dict(checks) if isinstance(checks, dict) else {}   # 목록 체크박스 {컬럼제목: True/False}
+        self.exam_code = exam_code or ""   # QR 의 검사코드 (예: 'FB0164')
+        self.exam_name = exam_name or ""   # 검사코드표의 검사명 (예: 'Voided urine (Des)[Liquid based cytology]')
 
     def to_dict(self):
         return {k: getattr(self, k) for k in self.__slots__}
@@ -60,12 +64,13 @@ class Store:
             pass
 
     # ------------------------------------------------------------ 조작
-    def add(self, code, raw=""):
-        """추가된 Item 반환, 이미 목록에 있으면 None. raw = QR 원문."""
+    def add(self, code, raw="", exam_code="", exam_name=""):
+        """추가된 Item 반환, 이미 목록에 있으면 None. raw = QR 원문(검사번호 부분)."""
         with self.lock:
             if any(i.code == code for i in self.items):
                 return None
-            item = Item(self._next_id, code, added=time.strftime("%H:%M:%S"), raw=raw)
+            item = Item(self._next_id, code, added=time.strftime("%H:%M:%S"), raw=raw,
+                        exam_code=exam_code, exam_name=exam_name)
             self._next_id += 1
             self.items.append(item)
         self.save()

@@ -2,7 +2,7 @@
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ORDER = ["__init__", "config", "hangul", "models", "win32", "uia", "worker", "gui"]
+ORDER = ["__init__", "config", "hangul", "models", "exam", "win32", "uia", "worker", "gui"]
 
 out = ['''# -*- coding: utf-8 -*-
 """결과입력 자동 프로그램 (AMIS 병리결과입력 QR 일괄저장) - 단일 실행 파일 (tools/make_single.py 로 자동 생성, 직접 수정하지 마세요)
